@@ -29,6 +29,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Warning
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -82,6 +84,9 @@ fun SettingsScreen(
   state: MainUiState,
   onBack: () -> Unit,
   onEndpointChange: (String) -> Unit,
+  onToggleIpOverride: (Boolean) -> Unit,
+  onOverrideIpChange: (String) -> Unit,
+  onToggleApiKey: (Boolean) -> Unit,
   onTestEndpoint: () -> Unit,
   onSelectTargetApp: (InstalledTvApp) -> Unit,
   onSelectLanguage: (LanguageOption) -> Unit,
@@ -177,10 +182,116 @@ fun SettingsScreen(
             }
           }
 
+          // Checkbox 1: IP override for FQDN / split-DNS / Tailscale setups
+          TvCheckboxRow(
+            checked = state.settings.useIpOverride,
+            onCheckedChange = onToggleIpOverride,
+            title = "Override server IP address",
+            subtitle =
+              "Connect directly to this IP (LAN / Tailscale) while keeping the hostname and Host/SNI headers",
+            modifier = Modifier.testTag("use_ip_override_checkbox"),
+          )
+
+          AnimatedVisibility(visible = state.settings.useIpOverride) {
+            Column(
+              modifier = Modifier.fillMaxWidth(),
+              verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+              Text(
+                text = "Server IP address (IP only, no port or path)",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TvTextSecondary,
+              )
+              OutlinedTextField(
+                value = state.settings.overrideIp,
+                onValueChange = onOverrideIpChange,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyLarge.copy(color = TvTextPrimary),
+                placeholder = {
+                  Text(
+                    text = "e.g. 10.3.3.20 or 100.64.1.5",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TvTextSecondary.copy(alpha = 0.7f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { onTestEndpoint() }),
+                shape = RoundedCornerShape(14.dp),
+                colors =
+                  OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = TvSurfaceFocus,
+                    unfocusedContainerColor = TvSurfaceElevated,
+                    focusedBorderColor = TvCyan,
+                    unfocusedBorderColor = TvOutline,
+                    cursorColor = TvCyan,
+                  ),
+                modifier = Modifier.fillMaxWidth().testTag("override_ip_input"),
+              )
+            }
+          }
+
+          // Checkbox 2: Provide API key (OpenAI Authorization: Bearer)
+          TvCheckboxRow(
+            checked = state.settings.useApiKey,
+            onCheckedChange = onToggleApiKey,
+            title = "Provide API key",
+            subtitle = "Include Authorization: Bearer token per OpenAI API specification",
+            modifier = Modifier.testTag("use_api_key_checkbox"),
+          )
+
+          AnimatedVisibility(visible = state.settings.useApiKey) {
+            Column(
+              modifier = Modifier.fillMaxWidth(),
+              verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+              Text(
+                text = "API key (sent as Authorization: Bearer)",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TvTextSecondary,
+              )
+              OutlinedTextField(
+                value = state.settings.apiKey,
+                onValueChange = onApiKeyChange,
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                textStyle = MaterialTheme.typography.bodyLarge.copy(color = TvTextPrimary),
+                placeholder = {
+                  Text(
+                    text = "sk-… or server bearer token",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TvTextSecondary.copy(alpha = 0.7f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { onTestEndpoint() }),
+                shape = RoundedCornerShape(14.dp),
+                colors =
+                  OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = TvSurfaceFocus,
+                    unfocusedContainerColor = TvSurfaceElevated,
+                    focusedBorderColor = TvCyan,
+                    unfocusedBorderColor = TvOutline,
+                    cursorColor = TvCyan,
+                  ),
+                modifier = Modifier.fillMaxWidth().testTag("api_key_input"),
+              )
+            }
+          }
+
           if (state.settings.hasValidCachedEndpoint && state.testStatus == TestStatus.Idle) {
+            val viaIp =
+              if (state.settings.useIpOverride && state.settings.overrideIp.isNotBlank()) {
+                " (via ${state.settings.overrideIp.trim()})"
+              } else {
+                ""
+              }
             Text(
               text =
-                "Active: ${state.settings.detectedFamily?.label} at ${state.settings.detectedEndpointUrl}",
+                "Active: ${state.settings.detectedFamily?.label} at ${state.settings.detectedEndpointUrl}$viaIp",
               style = MaterialTheme.typography.bodyMedium,
               color = TvEmerald,
             )
@@ -319,8 +430,8 @@ fun SettingsScreen(
             ) {
               Text(
                 text =
-                  if (advancedExpanded) "Hide API key, model & mic source"
-                  else "Show API key, model & mic source",
+                  if (advancedExpanded) "Hide model & microphone source"
+                  else "Show model & microphone source",
                 style = MaterialTheme.typography.bodyLarge,
                 color = TvTextPrimary,
                 modifier = Modifier.weight(1f),
@@ -343,35 +454,6 @@ fun SettingsScreen(
               modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
               verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-              Text(
-                text = "API Key (optional, sent as Authorization: Bearer)",
-                style = MaterialTheme.typography.bodyMedium,
-                color = TvTextSecondary,
-              )
-              OutlinedTextField(
-                value = state.settings.apiKey,
-                onValueChange = onApiKeyChange,
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                textStyle = MaterialTheme.typography.bodyLarge.copy(color = TvTextPrimary),
-                placeholder = {
-                  Text(
-                    "Leave empty for local servers",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TvTextSecondary.copy(alpha = 0.7f),
-                  )
-                },
-                shape = RoundedCornerShape(14.dp),
-                colors =
-                  OutlinedTextFieldDefaults.colors(
-                    focusedContainerColor = TvSurfaceFocus,
-                    unfocusedContainerColor = TvSurfaceElevated,
-                    focusedBorderColor = TvCyan,
-                    unfocusedBorderColor = TvOutline,
-                  ),
-                modifier = Modifier.fillMaxWidth().testTag("api_key_input"),
-              )
-
               Text(
                 text = "Model Name (default: whisper-1)",
                 style = MaterialTheme.typography.bodyMedium,
@@ -483,6 +565,53 @@ fun SettingsScreen(
       }
 
       item { Spacer(modifier = Modifier.height(16.dp)) }
+    }
+  }
+}
+
+@Composable
+private fun TvCheckboxRow(
+  checked: Boolean,
+  onCheckedChange: (Boolean) -> Unit,
+  title: String,
+  subtitle: String,
+  modifier: Modifier = Modifier,
+) {
+  TvFocusableCard(
+    onClick = { onCheckedChange(!checked) },
+    isSelected = checked,
+    modifier = modifier.fillMaxWidth(),
+  ) {
+    Row(
+      modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+      Checkbox(
+        checked = checked,
+        onCheckedChange = null,
+        colors =
+          CheckboxDefaults.colors(
+            checkedColor = TvCyan,
+            uncheckedColor = TvTextSecondary,
+            checkmarkColor = TvBackground,
+          ),
+      )
+      Column(
+        modifier = Modifier.weight(1f),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+      ) {
+        Text(
+          text = title,
+          style = MaterialTheme.typography.titleMedium,
+          color = TvTextPrimary,
+        )
+        Text(
+          text = subtitle,
+          style = MaterialTheme.typography.bodyMedium,
+          color = TvTextSecondary,
+        )
+      }
     }
   }
 }

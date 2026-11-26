@@ -9,10 +9,17 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.Socket
 import java.net.URI
 import java.net.URL
 import java.net.URLEncoder
 import java.util.UUID
+import javax.net.ssl.HostnameVerifier
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SNIHostName
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -53,7 +60,52 @@ interface HttpTransport {
     fields: Map<String, String>,
     connectTimeoutMs: Int,
     readTimeoutMs: Int,
+    tlsServerName: String? = null,
   ): HttpResponseData
+}
+
+private class SniSocketFactory(
+  private val delegate: SSLSocketFactory,
+  private val sniHostname: String,
+) : SSLSocketFactory() {
+
+  override fun getDefaultCipherSuites(): Array<String> = delegate.defaultCipherSuites
+
+  override fun getSupportedCipherSuites(): Array<String> = delegate.supportedCipherSuites
+
+  override fun createSocket(): Socket = configureSni(delegate.createSocket())
+
+  override fun createSocket(s: Socket?, host: String?, port: Int, autoClose: Boolean): Socket =
+    configureSni(delegate.createSocket(s, sniHostname, port, autoClose))
+
+  override fun createSocket(host: String?, port: Int): Socket =
+    configureSni(delegate.createSocket(host, port))
+
+  override fun createSocket(
+    host: String?,
+    port: Int,
+    localHost: InetAddress?,
+    localPort: Int,
+  ): Socket = configureSni(delegate.createSocket(host, port, localHost, localPort))
+
+  override fun createSocket(host: InetAddress?, port: Int): Socket =
+    configureSni(delegate.createSocket(host, port))
+
+  override fun createSocket(
+    address: InetAddress?,
+    port: Int,
+    localAddress: InetAddress?,
+    localPort: Int,
+  ): Socket = configureSni(delegate.createSocket(address, port, localAddress, localPort))
+
+  private fun configureSni(socket: Socket): Socket {
+    if (socket is SSLSocket) {
+      val params = socket.sslParameters
+      params.serverNames = listOf(SNIHostName(sniHostname))
+      socket.sslParameters = params
+    }
+    return socket
+  }
 }
 
 object UrlConnectionTransport : HttpTransport {
@@ -66,6 +118,7 @@ object UrlConnectionTransport : HttpTransport {
     fields: Map<String, String>,
     connectTimeoutMs: Int,
     readTimeoutMs: Int,
+    tlsServerName: String?,
   ): HttpResponseData {
     val boundary = "----TvVoiceSearch${UUID.randomUUID().toString().replace("-", "")}"
     val bodyOut = ByteArrayOutputStream()
@@ -91,6 +144,15 @@ object UrlConnectionTransport : HttpTransport {
     val payload = bodyOut.toByteArray()
     val conn = (URL(urlString).openConnection() as HttpURLConnection)
     try {
+      if (conn is HttpsURLConnection && !tlsServerName.isNullOrBlank()) {
+        conn.sslSocketFactory =
+          SniSocketFactory(HttpsURLConnection.getDefaultSSLSocketFactory(), tlsServerName)
+        conn.hostnameVerifier =
+          HostnameVerifier { _, session ->
+            HttpsURLConnection.getDefaultHostnameVerifier().verify(tlsServerName, session)
+          }
+      }
+
       conn.requestMethod = "POST"
       conn.connectTimeout = connectTimeoutMs
       conn.readTimeout = readTimeoutMs
@@ -131,6 +193,78 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
     val fallbackHttpsBase: String?,
     val path: String,
   )
+
+  data class ResolvedTarget(
+    val connectUrl: String,
+    val hostHeader: String?,
+    val tlsServerName: String?,
+  )
+
+  fun validateNumericIp(rawIp: String): String? {
+    val trimmed = rawIp.trim().removeSurrounding("[", "]")
+    if (trimmed.isEmpty()) return null
+    if (
+      trimmed.contains("://") ||
+        trimmed.contains('/') ||
+        trimmed.contains('?') ||
+        trimmed.contains('#') ||
+        trimmed.any { it.isWhitespace() }
+    ) {
+      return null
+    }
+    if (isValidIpv4(trimmed)) return trimmed
+    if (isValidIpv6(trimmed)) return trimmed
+    return null
+  }
+
+  private fun isValidIpv4(ip: String): Boolean {
+    val parts = ip.split('.')
+    if (parts.size != 4) return false
+    return parts.all { part ->
+      if (part.isEmpty() || part.length > 3 || !part.all { it.isDigit() }) return@all false
+      val num = part.toIntOrNull() ?: return@all false
+      num in 0..255
+    }
+  }
+
+  private fun isValidIpv6(ip: String): Boolean {
+    val colons = ip.count { it == ':' }
+    if (colons < 2 || colons > 7) return false
+    if (ip.split("::").size > 2) return false
+    if (!ip.all { ch -> ch.isDigit() || ch in 'a'..'f' || ch in 'A'..'F' || ch == ':' || ch == '.' }) {
+      return false
+    }
+    if (ip.contains('.')) {
+      val lastColon = ip.lastIndexOf(':')
+      val ipv4Tail = ip.substring(lastColon + 1)
+      if (!isValidIpv4(ipv4Tail)) return false
+    }
+    return true
+  }
+
+  fun resolveTarget(logicalUrl: String, validatedOverrideIp: String?): ResolvedTarget {
+    if (validatedOverrideIp.isNullOrBlank()) {
+      return ResolvedTarget(connectUrl = logicalUrl, hostHeader = null, tlsServerName = null)
+    }
+
+    val uri = URI(logicalUrl)
+    val originalHost = uri.host ?: return ResolvedTarget(logicalUrl, null, null)
+    val port = uri.port
+    val hostHeader = if (port != -1) "$originalHost:$port" else originalHost
+    val ipForAuthority =
+      if (validatedOverrideIp.contains(':')) "[$validatedOverrideIp]" else validatedOverrideIp
+    val portPart = if (port != -1) ":$port" else ""
+    val pathPart = uri.rawPath.orEmpty()
+    val queryPart = uri.rawQuery?.let { "?$it" }.orEmpty()
+    val connectUrl = "${uri.scheme}://$ipForAuthority$portPart$pathPart$queryPart"
+    val sni = if (uri.scheme.equals("https", ignoreCase = true)) originalHost else null
+
+    return ResolvedTarget(
+      connectUrl = connectUrl,
+      hostHeader = hostHeader,
+      tlsServerName = sni,
+    )
+  }
 
   fun normalizeInput(rawInput: String): NormalizedInput? {
     var trimmed = rawInput.trim()
@@ -210,17 +344,36 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
     apiKey: String,
     modelName: String,
     language: LanguageOption,
+    useIpOverride: Boolean = false,
+    overrideIp: String = "",
   ): ProbeResult =
     withContext(Dispatchers.IO) {
       val normalized =
         normalizeInput(rawInput)
           ?: return@withContext ProbeResult.Failure("Enter a valid server host or URL.")
 
+      val validatedIp =
+        if (useIpOverride) {
+          validateNumericIp(overrideIp)
+            ?: return@withContext ProbeResult.Failure(
+              "Enter a valid IP address (no scheme, port, or path) or uncheck IP override."
+            )
+        } else {
+          null
+        }
+
       val silentWav = WavEncoder.silentWav(durationMillis = 500)
       val primaryCandidates = buildCandidates(normalized.primaryBase, normalized.path)
 
       val primaryOutcome =
-        probeCandidateList(primaryCandidates, silentWav, apiKey, modelName, language)
+        probeCandidateList(
+          candidates = primaryCandidates,
+          silentWav = silentWav,
+          apiKey = apiKey,
+          modelName = modelName,
+          language = language,
+          validatedOverrideIp = validatedIp,
+        )
       if (primaryOutcome.result != null) {
         return@withContext primaryOutcome.result
       }
@@ -228,7 +381,14 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
       if (primaryOutcome.hadConnectionError && normalized.fallbackHttpsBase != null) {
         val httpsCandidates = buildCandidates(normalized.fallbackHttpsBase, normalized.path)
         val httpsOutcome =
-          probeCandidateList(httpsCandidates, silentWav, apiKey, modelName, language)
+          probeCandidateList(
+            candidates = httpsCandidates,
+            silentWav = silentWav,
+            apiKey = apiKey,
+            modelName = modelName,
+            language = language,
+            validatedOverrideIp = validatedIp,
+          )
         if (httpsOutcome.result != null) {
           return@withContext httpsOutcome.result
         }
@@ -254,9 +414,11 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
     apiKey: String,
     modelName: String,
     language: LanguageOption,
+    validatedOverrideIp: String?,
   ): ProbeBatchOutcome {
     var hadConnectionError = false
     var lastError: String? = null
+    val viaSuffix = validatedOverrideIp?.let { " (via $it)" }.orEmpty()
 
     for (candidate in candidates) {
       try {
@@ -268,6 +430,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
             apiKey = apiKey,
             modelName = modelName,
             language = language,
+            validatedOverrideIp = validatedOverrideIp,
             connectTimeoutMs = PROBE_TIMEOUT_MS,
             readTimeoutMs = PROBE_TIMEOUT_MS,
           )
@@ -279,7 +442,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
                   ProbeResult.Success(
                     url = candidate.url,
                     family = candidate.family,
-                    message = "OK: ${candidate.family.label} at ${candidate.url}",
+                    message = "OK: ${candidate.family.label} at ${candidate.url}$viaSuffix",
                   ),
                 hadConnectionError = false,
                 lastError = null,
@@ -294,7 +457,8 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
                 ProbeResult.NeedsApiKey(
                   url = candidate.url,
                   family = candidate.family,
-                  message = "Needs an API key (HTTP ${response.statusCode}). Fill in Advanced -> API key.",
+                  message =
+                    "Needs an API key (HTTP ${response.statusCode}). Fill in Advanced -> API key.",
                 ),
               hadConnectionError = false,
               lastError = null,
@@ -307,7 +471,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
                   ProbeResult.Success(
                     url = candidate.url,
                     family = candidate.family,
-                    message = "OK: ${candidate.family.label} at ${candidate.url}",
+                    message = "OK: ${candidate.family.label} at ${candidate.url}$viaSuffix",
                   ),
                 hadConnectionError = false,
                 lastError = null,
@@ -343,6 +507,16 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
         return@withContext TranscribeResult.Failure("No transcription server set. Open Settings.")
       }
 
+      val validatedIp =
+        if (settings.useIpOverride) {
+          validateNumericIp(settings.overrideIp)
+            ?: return@withContext TranscribeResult.Failure(
+              "Invalid override IP address in Settings."
+            )
+        } else {
+          null
+        }
+
       var targetUrl = settings.detectedEndpointUrl
       var targetFamily = settings.detectedFamily
       var refreshed = false
@@ -352,9 +526,11 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           val probe =
             detectEndpoint(
               rawInput = settings.endpointInput,
-              apiKey = settings.apiKey,
+              apiKey = settings.effectiveApiKey,
               modelName = settings.modelName,
               language = settings.language,
+              useIpOverride = settings.useIpOverride,
+              overrideIp = settings.overrideIp,
             )
         ) {
           is ProbeResult.Success -> {
@@ -366,7 +542,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           is ProbeResult.NeedsApiKey -> {
             onEndpointDetected(probe.url, probe.family)
             return@withContext TranscribeResult.Failure(
-              "Needs an API key. Fill in Advanced -> API key.",
+              "Needs an API key. Enable 'Provide API key' in Settings.",
               isAuthError = true,
             )
           }
@@ -381,9 +557,10 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           url = targetUrl,
           family = targetFamily,
           wavBytes = wavBytes,
-          apiKey = settings.apiKey,
+          apiKey = settings.effectiveApiKey,
           modelName = settings.modelName,
           language = settings.language,
+          validatedOverrideIp = validatedIp,
           refreshed = refreshed,
         )
 
@@ -393,9 +570,11 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           val reProbe =
             detectEndpoint(
               rawInput = settings.endpointInput,
-              apiKey = settings.apiKey,
+              apiKey = settings.effectiveApiKey,
               modelName = settings.modelName,
               language = settings.language,
+              useIpOverride = settings.useIpOverride,
+              overrideIp = settings.overrideIp,
             )
         ) {
           is ProbeResult.Success -> {
@@ -406,9 +585,10 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
                   url = reProbe.url,
                   family = reProbe.family,
                   wavBytes = wavBytes,
-                  apiKey = settings.apiKey,
+                  apiKey = settings.effectiveApiKey,
                   modelName = settings.modelName,
                   language = settings.language,
+                  validatedOverrideIp = validatedIp,
                   refreshed = true,
                 )
             ) {
@@ -419,7 +599,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           }
           is ProbeResult.NeedsApiKey -> {
             return@withContext TranscribeResult.Failure(
-              "Needs an API key. Fill in Advanced -> API key.",
+              "Needs an API key. Enable 'Provide API key' in Settings.",
               isAuthError = true,
             )
           }
@@ -449,6 +629,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
     apiKey: String,
     modelName: String,
     language: LanguageOption,
+    validatedOverrideIp: String?,
     refreshed: Boolean,
   ): InternalTranscribeOutcome {
     return try {
@@ -460,6 +641,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           apiKey = apiKey,
           modelName = modelName,
           language = language,
+          validatedOverrideIp = validatedOverrideIp,
           connectTimeoutMs = TRANSCRIBE_CONNECT_TIMEOUT_MS,
           readTimeoutMs = TRANSCRIBE_READ_TIMEOUT_MS,
         )
@@ -506,29 +688,24 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
     apiKey: String,
     modelName: String,
     language: LanguageOption,
+    validatedOverrideIp: String?,
     connectTimeoutMs: Int,
     readTimeoutMs: Int,
   ): HttpResponseData {
-    val headers = buildMap {
-      if (apiKey.isNotBlank()) {
-        put("Authorization", "Bearer ${apiKey.trim()}")
-      }
-    }
-
-    val effectiveUrl: String
+    val logicalUrl: String
     val fileFieldName: String
     val fields = linkedMapOf<String, String>()
 
     when (family) {
       ServerFamily.OPENAI_V1, ServerFamily.OPENAI_NO_V1 -> {
-        effectiveUrl = url
+        logicalUrl = url
         fileFieldName = "file"
         fields["model"] = modelName.ifBlank { AppSettings.DEFAULT_MODEL_NAME }
         fields["response_format"] = "json"
         language.code?.let { fields["language"] = it }
       }
       ServerFamily.WHISPER_CPP -> {
-        effectiveUrl = url
+        logicalUrl = url
         fileFieldName = "file"
         fields["response_format"] = "json"
         language.code?.let { fields["language"] = it }
@@ -537,13 +714,22 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
         val separator = if (url.contains("?")) "&" else "?"
         val langQuery =
           language.code?.let { "&language=${URLEncoder.encode(it, "UTF-8")}" } ?: ""
-        effectiveUrl = "${url}${separator}output=json&task=transcribe$langQuery"
+        logicalUrl = "${url}${separator}output=json&task=transcribe$langQuery"
         fileFieldName = "audio_file"
       }
     }
 
+    val target = resolveTarget(logicalUrl, validatedOverrideIp)
+
+    val headers = buildMap {
+      target.hostHeader?.let { put("Host", it) }
+      if (apiKey.isNotBlank()) {
+        put("Authorization", "Bearer ${apiKey.trim()}")
+      }
+    }
+
     return transport.postMultipart(
-      urlString = effectiveUrl,
+      urlString = target.connectUrl,
       headers = headers,
       fileFieldName = fileFieldName,
       fileName = "audio.wav",
@@ -551,6 +737,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
       fields = fields,
       connectTimeoutMs = connectTimeoutMs,
       readTimeoutMs = readTimeoutMs,
+      tlsServerName = target.tlsServerName,
     )
   }
 

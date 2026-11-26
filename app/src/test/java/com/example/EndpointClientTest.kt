@@ -12,6 +12,8 @@ import com.example.network.TranscribeResult
 import java.io.IOException
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -23,9 +25,18 @@ import org.robolectric.annotation.Config
 class EndpointClientTest {
 
   private class FakeTransport(
-    private val handler: (url: String, fileField: String, fields: Map<String, String>) -> HttpResponseData
+    private val handler:
+      (
+        url: String,
+        headers: Map<String, String>,
+        fileField: String,
+        fields: Map<String, String>,
+        tlsServerName: String?,
+      ) -> HttpResponseData
   ) : HttpTransport {
     val calledUrls = mutableListOf<String>()
+    var lastHeaders: Map<String, String> = emptyMap()
+    var lastTlsServerName: String? = null
 
     override fun postMultipart(
       urlString: String,
@@ -36,15 +47,18 @@ class EndpointClientTest {
       fields: Map<String, String>,
       connectTimeoutMs: Int,
       readTimeoutMs: Int,
+      tlsServerName: String?,
     ): HttpResponseData {
       calledUrls.add(urlString)
-      return handler(urlString, fileFieldName, fields)
+      lastHeaders = headers
+      lastTlsServerName = tlsServerName
+      return handler(urlString, headers, fileFieldName, fields, tlsServerName)
     }
   }
 
   @Test
   fun `all endpoint input forms resolve to exact same endpoint without doubling v1`() = runTest {
-    val transport = FakeTransport { url, _, _ ->
+    val transport = FakeTransport { url, _, _, _, _ ->
       if (url == "http://10.3.3.20:8000/v1/audio/transcriptions") {
         HttpResponseData(200, """{"text":""}""")
       } else {
@@ -76,7 +90,7 @@ class EndpointClientTest {
 
   @Test
   fun `no-scheme host falls back to https on http connection error`() = runTest {
-    val transport = FakeTransport { url, _, _ ->
+    val transport = FakeTransport { url, _, _, _, _ ->
       if (url.startsWith("http://")) {
         throw IOException("Connection refused")
       }
@@ -98,15 +112,96 @@ class EndpointClientTest {
   }
 
   @Test
+  fun `ip override connects to override IP while sending FQDN Host header and TLS SNI`() =
+    runTest {
+      val transport = FakeTransport { url, headers, _, _, sni ->
+        if (
+          url == "https://10.3.3.20:8443/v1/audio/transcriptions" &&
+            headers["Host"] == "stt.example.com:8443" &&
+            sni == "stt.example.com" &&
+            headers["Authorization"] == "Bearer sk-test-123"
+        ) {
+          HttpResponseData(200, """{"text":"działa świetnie"}""")
+        } else {
+          HttpResponseData(404, "Not found")
+        }
+      }
+      val client = EndpointClient(transport)
+
+      val probe =
+        client.detectEndpoint(
+          rawInput = "https://stt.example.com:8443",
+          apiKey = "sk-test-123",
+          modelName = "whisper-1",
+          language = LanguageOption.AUTO,
+          useIpOverride = true,
+          overrideIp = "10.3.3.20",
+        )
+      assertTrue(probe is ProbeResult.Success)
+      assertEquals(
+        "https://stt.example.com:8443/v1/audio/transcriptions",
+        (probe as ProbeResult.Success).url,
+      )
+      assertEquals("stt.example.com:8443", transport.lastHeaders["Host"])
+      assertEquals("stt.example.com", transport.lastTlsServerName)
+      assertEquals("Bearer sk-test-123", transport.lastHeaders["Authorization"])
+    }
+
+  @Test
+  fun `api key is only included in Authorization header when useApiKey is enabled`() = runTest {
+    val transport = FakeTransport { _, _, _, _, _ -> HttpResponseData(200, """{"text":"ok"}""") }
+    val client = EndpointClient(transport)
+
+    val disabledSettings =
+      AppSettings(
+        endpointInput = "http://10.3.3.20:8000",
+        useApiKey = false,
+        apiKey = "sk-secret",
+        detectedEndpointUrl = "http://10.3.3.20:8000/v1/audio/transcriptions",
+        detectedFamily = ServerFamily.OPENAI_V1,
+        detectedForInput = "http://10.3.3.20:8000|false|",
+      )
+
+    client.transcribe(WavEncoder.silentWav(100), disabledSettings, { _, _ -> }, {})
+    assertFalse(transport.lastHeaders.containsKey("Authorization"))
+
+    val enabledSettings = disabledSettings.copy(useApiKey = true)
+    client.transcribe(WavEncoder.silentWav(100), enabledSettings, { _, _ -> }, {})
+    assertEquals("Bearer sk-secret", transport.lastHeaders["Authorization"])
+  }
+
+  @Test
+  fun `rejects invalid override IP address`() = runTest {
+    val client =
+      EndpointClient(FakeTransport { _, _, _, _, _ -> HttpResponseData(200, """{"text":""}""") })
+    assertNull(client.validateNumericIp("10.3.3.20:8000"))
+    assertNull(client.validateNumericIp("http://10.3.3.20"))
+    assertEquals("100.64.1.5", client.validateNumericIp("100.64.1.5"))
+
+    val probe =
+      client.detectEndpoint(
+        rawInput = "https://stt.example.com",
+        apiKey = "",
+        modelName = "whisper-1",
+        language = LanguageOption.AUTO,
+        useIpOverride = true,
+        overrideIp = "10.3.3.20:8000",
+      )
+    assertTrue(probe is ProbeResult.Failure)
+  }
+
+  @Test
   fun `detects 401 as NeedsApiKey and 400 audio error as Success`() = runTest {
     val authClient =
-      EndpointClient(FakeTransport { _, _, _ -> HttpResponseData(401, """{"error":"unauthorized"}""") })
+      EndpointClient(
+        FakeTransport { _, _, _, _, _ -> HttpResponseData(401, """{"error":"unauthorized"}""") }
+      )
     val authRes = authClient.detectEndpoint("10.3.3.20:8000", "", "whisper-1", LanguageOption.AUTO)
     assertTrue(authRes is ProbeResult.NeedsApiKey)
 
     val validationClient =
       EndpointClient(
-        FakeTransport { url, _, _ ->
+        FakeTransport { url, _, _, _, _ ->
           if (url.endsWith("/inference")) HttpResponseData(400, "invalid audio file duration")
           else HttpResponseData(404, "not found")
         }
@@ -120,7 +215,7 @@ class EndpointClientTest {
   @Test
   fun `transcribe preserves Polish UTF-8 characters and re-probes once on 404`() = runTest {
     var failOldOnce = true
-    val transport = FakeTransport { url, _, fields ->
+    val transport = FakeTransport { url, _, _, fields, _ ->
       if (url.endsWith("/audio/transcriptions") && !url.contains("/v1/") && failOldOnce) {
         failOldOnce = false
         HttpResponseData(404, "Moved")
@@ -137,7 +232,7 @@ class EndpointClientTest {
         endpointInput = "10.3.3.20:8000",
         detectedEndpointUrl = "http://10.3.3.20:8000/audio/transcriptions",
         detectedFamily = ServerFamily.OPENAI_NO_V1,
-        detectedForInput = "10.3.3.20:8000",
+        detectedForInput = "10.3.3.20:8000|false|",
         language = LanguageOption.POLISH,
       )
 

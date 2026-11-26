@@ -81,7 +81,7 @@ class RecognizerService : RecognitionService() {
                 wavBytes = recOutcome.wavBytes,
                 settings = currentSettings,
                 onEndpointDetected = { url, family ->
-                  settingsRepo.saveDetectedEndpoint(currentSettings.endpointInput, url, family)
+                  settingsRepo.saveDetectedEndpoint(currentSettings.cacheKey, url, family)
                 },
                 onEndpointInvalidated = { settingsRepo.clearDetectedEndpoint() },
               )

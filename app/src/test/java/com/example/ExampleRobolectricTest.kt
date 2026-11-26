@@ -5,7 +5,9 @@ import android.content.Intent
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
+import com.example.data.AppSettings
 import com.example.handoff.AppHandoff
 import com.example.handoff.HandoffMethod
 import com.example.ui.screens.SearchScreen
@@ -57,13 +59,20 @@ class ExampleRobolectricTest {
   }
 
   @Test
-  fun `SettingsScreen displays endpoint and language controls`() {
+  fun `SettingsScreen displays endpoint, IP override, and API key controls`() {
     composeTestRule.setContent {
       TvVoiceSearchTheme {
         SettingsScreen(
-          state = MainUiState(isSettingsOpen = true),
+          state =
+            MainUiState(
+              isSettingsOpen = true,
+              settings = AppSettings(useIpOverride = true, useApiKey = true),
+            ),
           onBack = {},
           onEndpointChange = {},
+          onToggleIpOverride = {},
+          onOverrideIpChange = {},
+          onToggleApiKey = {},
           onTestEndpoint = {},
           onSelectTargetApp = {},
           onSelectLanguage = {},
@@ -79,6 +88,10 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("settings_back_button").assertIsDisplayed()
     composeTestRule.onNodeWithTag("endpoint_input").assertIsDisplayed()
     composeTestRule.onNodeWithTag("test_endpoint_button").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("use_ip_override_checkbox").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("override_ip_input").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("use_api_key_checkbox").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("api_key_input").performScrollTo().assertIsDisplayed()
   }
 
   @Test

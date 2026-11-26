@@ -27,6 +27,9 @@ enum class ServerFamily(val label: String) {
 
 data class AppSettings(
   val endpointInput: String = "",
+  val useIpOverride: Boolean = false,
+  val overrideIp: String = "",
+  val useApiKey: Boolean = false,
   val detectedEndpointUrl: String = "",
   val detectedFamily: ServerFamily? = null,
   val detectedForInput: String = "",
@@ -38,11 +41,17 @@ data class AppSettings(
   val micSource: MicSource = MicSource.AUTO,
   val lastAssistArgsLog: String = "",
 ) {
+  val cacheKey: String
+    get() = "${endpointInput.trim()}|$useIpOverride|${overrideIp.trim()}"
+
+  val effectiveApiKey: String
+    get() = if (useApiKey) apiKey.trim() else ""
+
   val hasValidCachedEndpoint: Boolean
     get() =
       detectedEndpointUrl.isNotBlank() &&
         detectedFamily != null &&
-        detectedForInput == endpointInput.trim()
+        detectedForInput == cacheKey
 
   companion object {
     const val DEFAULT_TARGET_PACKAGE = "org.smarttube.stable"
@@ -74,9 +83,16 @@ class SettingsRepository private constructor(context: Context) {
     val micSource = MicSource.entries.firstOrNull { it.name == micName } ?: MicSource.AUTO
     val familyName = prefs.getString(KEY_DETECTED_FAMILY, null)
     val family = ServerFamily.entries.firstOrNull { it.name == familyName }
+    val savedApiKey = prefs.getString(KEY_API_KEY, "") ?: ""
+    val useApiKey =
+      if (prefs.contains(KEY_USE_API_KEY)) prefs.getBoolean(KEY_USE_API_KEY, false)
+      else savedApiKey.isNotBlank()
 
     return AppSettings(
       endpointInput = prefs.getString(KEY_ENDPOINT_INPUT, "") ?: "",
+      useIpOverride = prefs.getBoolean(KEY_USE_IP_OVERRIDE, false),
+      overrideIp = prefs.getString(KEY_OVERRIDE_IP, "") ?: "",
+      useApiKey = useApiKey,
       detectedEndpointUrl = prefs.getString(KEY_DETECTED_URL, "") ?: "",
       detectedFamily = family,
       detectedForInput = prefs.getString(KEY_DETECTED_FOR_INPUT, "") ?: "",
@@ -87,7 +103,7 @@ class SettingsRepository private constructor(context: Context) {
         prefs.getString(KEY_TARGET_LABEL, AppSettings.DEFAULT_TARGET_LABEL)
           ?: AppSettings.DEFAULT_TARGET_LABEL,
       language = language,
-      apiKey = prefs.getString(KEY_API_KEY, "") ?: "",
+      apiKey = savedApiKey,
       modelName =
         prefs.getString(KEY_MODEL_NAME, AppSettings.DEFAULT_MODEL_NAME)?.ifBlank {
           AppSettings.DEFAULT_MODEL_NAME
@@ -100,9 +116,10 @@ class SettingsRepository private constructor(context: Context) {
   fun updateEndpointInput(input: String) {
     val trimmed = input.trim()
     val current = _settings.value
+    val nextCacheKey = "$trimmed|${current.useIpOverride}|${current.overrideIp.trim()}"
     prefs.edit().apply {
       putString(KEY_ENDPOINT_INPUT, trimmed)
-      if (current.detectedForInput != trimmed) {
+      if (current.detectedForInput != nextCacheKey) {
         remove(KEY_DETECTED_URL)
         remove(KEY_DETECTED_FAMILY)
         remove(KEY_DETECTED_FOR_INPUT)
@@ -112,12 +129,47 @@ class SettingsRepository private constructor(context: Context) {
     _settings.value = readFromPrefs()
   }
 
-  fun saveDetectedEndpoint(input: String, fullUrl: String, family: ServerFamily) {
+  fun setUseIpOverride(enabled: Boolean) {
+    val current = _settings.value
+    val nextCacheKey = "${current.endpointInput.trim()}|$enabled|${current.overrideIp.trim()}"
     prefs.edit().apply {
-      putString(KEY_ENDPOINT_INPUT, input.trim())
+      putBoolean(KEY_USE_IP_OVERRIDE, enabled)
+      if (current.detectedForInput != nextCacheKey) {
+        remove(KEY_DETECTED_URL)
+        remove(KEY_DETECTED_FAMILY)
+        remove(KEY_DETECTED_FOR_INPUT)
+      }
+      apply()
+    }
+    _settings.value = readFromPrefs()
+  }
+
+  fun updateOverrideIp(ip: String) {
+    val trimmed = ip.trim()
+    val current = _settings.value
+    val nextCacheKey = "${current.endpointInput.trim()}|${current.useIpOverride}|$trimmed"
+    prefs.edit().apply {
+      putString(KEY_OVERRIDE_IP, trimmed)
+      if (current.detectedForInput != nextCacheKey) {
+        remove(KEY_DETECTED_URL)
+        remove(KEY_DETECTED_FAMILY)
+        remove(KEY_DETECTED_FOR_INPUT)
+      }
+      apply()
+    }
+    _settings.value = readFromPrefs()
+  }
+
+  fun setUseApiKey(enabled: Boolean) {
+    prefs.edit().putBoolean(KEY_USE_API_KEY, enabled).apply()
+    _settings.value = readFromPrefs()
+  }
+
+  fun saveDetectedEndpoint(cacheKey: String, fullUrl: String, family: ServerFamily) {
+    prefs.edit().apply {
       putString(KEY_DETECTED_URL, fullUrl)
       putString(KEY_DETECTED_FAMILY, family.name)
-      putString(KEY_DETECTED_FOR_INPUT, input.trim())
+      putString(KEY_DETECTED_FOR_INPUT, cacheKey)
       apply()
     }
     _settings.value = readFromPrefs()
@@ -171,6 +223,9 @@ class SettingsRepository private constructor(context: Context) {
   companion object {
     private const val PREFS_NAME = "tv_voice_search_prefs"
     private const val KEY_ENDPOINT_INPUT = "endpoint_input"
+    private const val KEY_USE_IP_OVERRIDE = "use_ip_override"
+    private const val KEY_OVERRIDE_IP = "override_ip"
+    private const val KEY_USE_API_KEY = "use_api_key"
     private const val KEY_DETECTED_URL = "detected_url"
     private const val KEY_DETECTED_FAMILY = "detected_family"
     private const val KEY_DETECTED_FOR_INPUT = "detected_for_input"

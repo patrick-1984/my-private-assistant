@@ -217,7 +217,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         wavBytes = wavBytes,
         settings = currentSettings,
         onEndpointDetected = { url, family ->
-          settingsRepo.saveDetectedEndpoint(currentSettings.endpointInput, url, family)
+          settingsRepo.saveDetectedEndpoint(currentSettings.cacheKey, url, family)
         },
         onEndpointInvalidated = { settingsRepo.clearDetectedEndpoint() },
       )
@@ -331,6 +331,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     _uiState.update { it.copy(testStatus = TestStatus.Idle) }
   }
 
+  fun setUseIpOverride(enabled: Boolean) {
+    settingsRepo.setUseIpOverride(enabled)
+    _uiState.update { it.copy(testStatus = TestStatus.Idle) }
+  }
+
+  fun updateOverrideIp(ip: String) {
+    settingsRepo.updateOverrideIp(ip)
+    _uiState.update { it.copy(testStatus = TestStatus.Idle) }
+  }
+
+  fun setUseApiKey(enabled: Boolean) {
+    settingsRepo.setUseApiKey(enabled)
+    _uiState.update { it.copy(testStatus = TestStatus.Idle) }
+  }
+
   fun testEndpoint() {
     val current = settingsRepo.settings.value
     if (current.endpointInput.isBlank()) {
@@ -339,22 +354,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       }
       return
     }
+    if (current.useApiKey && current.apiKey.isBlank()) {
+      _uiState.update {
+        it.copy(testStatus = TestStatus.Error("Enter an API key or uncheck 'Provide API key'."))
+      }
+      return
+    }
     viewModelScope.launch {
       _uiState.update { it.copy(testStatus = TestStatus.Testing) }
       val probe =
         endpointClient.detectEndpoint(
           rawInput = current.endpointInput,
-          apiKey = current.apiKey,
+          apiKey = current.effectiveApiKey,
           modelName = current.modelName,
           language = current.language,
+          useIpOverride = current.useIpOverride,
+          overrideIp = current.overrideIp,
         )
       when (probe) {
         is ProbeResult.Success -> {
-          settingsRepo.saveDetectedEndpoint(current.endpointInput, probe.url, probe.family)
+          settingsRepo.saveDetectedEndpoint(current.cacheKey, probe.url, probe.family)
           _uiState.update { it.copy(testStatus = TestStatus.Ok(probe.message)) }
         }
         is ProbeResult.NeedsApiKey -> {
-          settingsRepo.saveDetectedEndpoint(current.endpointInput, probe.url, probe.family)
+          settingsRepo.saveDetectedEndpoint(current.cacheKey, probe.url, probe.family)
           _uiState.update { it.copy(testStatus = TestStatus.Warning(probe.message)) }
         }
         is ProbeResult.Failure -> {
