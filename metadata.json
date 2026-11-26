@@ -1,0 +1,6 @@
+{
+  "name": "TV Voice Search",
+  "description": "Lean Android TV voice assistant and speech recognizer using a custom Whisper-compatible transcription endpoint.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
