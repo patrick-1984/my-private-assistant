@@ -84,6 +84,7 @@ class MainActivity : ComponentActivity() {
               onEndpointChange = { viewModel.updateEndpointInput(it) },
               onToggleIpOverride = { viewModel.setUseIpOverride(it) },
               onOverrideIpChange = { viewModel.updateOverrideIp(it) },
+              onToggleIgnoreSsl = { viewModel.setIgnoreSsl(it) },
               onToggleApiKey = { viewModel.setUseApiKey(it) },
               onTestEndpoint = { viewModel.testEndpoint() },
               onSelectTargetApp = { viewModel.selectTargetApp(it) },
@@ -103,6 +104,7 @@ class MainActivity : ComponentActivity() {
               onSearchTextChange = { viewModel.updateSearchText(it) },
               onSubmitSearch = { viewModel.submitManualSearch() },
               onOpenSettings = { viewModel.openSettings() },
+              onDismiss = { finish() },
             )
           }
         }

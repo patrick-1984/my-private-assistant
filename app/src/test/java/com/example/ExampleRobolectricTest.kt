@@ -36,17 +36,24 @@ class ExampleRobolectricTest {
   }
 
   @Test
-  fun `SearchScreen displays core controls`() {
+  fun `SearchScreen displays floating bar controls and contextual Search button`() {
     composeTestRule.setContent {
       TvVoiceSearchTheme {
         SearchScreen(
-          state = MainUiState(phase = VoicePhase.IDLE, statusMessage = "Press mic or OK to speak"),
+          state =
+            MainUiState(
+              phase = VoicePhase.IDLE,
+              searchText = "polskie piosenki",
+              statusMessage = "Press mic or OK to speak",
+              settings = AppSettings(endpointInput = "https://stt.example.com"),
+            ),
           hasMicPermission = true,
           onMicClick = {},
           onRequestPermission = {},
           onSearchTextChange = {},
           onSubmitSearch = {},
           onOpenSettings = {},
+          onDismiss = {},
         )
       }
     }
@@ -59,19 +66,20 @@ class ExampleRobolectricTest {
   }
 
   @Test
-  fun `SettingsScreen displays endpoint, IP override, and API key controls`() {
+  fun `SettingsScreen displays endpoint, IP override, SSL ignore, and API key controls`() {
     composeTestRule.setContent {
       TvVoiceSearchTheme {
         SettingsScreen(
           state =
             MainUiState(
               isSettingsOpen = true,
-              settings = AppSettings(useIpOverride = true, useApiKey = true),
+              settings = AppSettings(useIpOverride = true, ignoreSsl = true, useApiKey = true),
             ),
           onBack = {},
           onEndpointChange = {},
           onToggleIpOverride = {},
           onOverrideIpChange = {},
+          onToggleIgnoreSsl = {},
           onToggleApiKey = {},
           onTestEndpoint = {},
           onSelectTargetApp = {},
@@ -88,8 +96,9 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("settings_back_button").assertIsDisplayed()
     composeTestRule.onNodeWithTag("endpoint_input").assertIsDisplayed()
     composeTestRule.onNodeWithTag("test_endpoint_button").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("use_ip_override_checkbox").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("override_ip_input").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("use_ip_override_checkbox").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("override_ip_input").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("use_ignore_ssl_checkbox").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("use_api_key_checkbox").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("api_key_input").performScrollTo().assertIsDisplayed()
   }

@@ -86,6 +86,7 @@ fun SettingsScreen(
   onEndpointChange: (String) -> Unit,
   onToggleIpOverride: (Boolean) -> Unit,
   onOverrideIpChange: (String) -> Unit,
+  onToggleIgnoreSsl: (Boolean) -> Unit,
   onToggleApiKey: (Boolean) -> Unit,
   onTestEndpoint: () -> Unit,
   onSelectTargetApp: (InstalledTvApp) -> Unit,
@@ -232,7 +233,17 @@ fun SettingsScreen(
             }
           }
 
-          // Checkbox 2: Provide API key (OpenAI Authorization: Bearer)
+          // Checkbox 2: Ignore SSL certificate checks (for self-signed/internal CA certificates)
+          TvCheckboxRow(
+            checked = state.settings.ignoreSsl,
+            onCheckedChange = onToggleIgnoreSsl,
+            title = "Ignore SSL certificate checks",
+            subtitle =
+              "Allow self-signed or private-CA HTTPS certificates on local/Tailscale servers",
+            modifier = Modifier.testTag("use_ignore_ssl_checkbox"),
+          )
+
+          // Checkbox 3: Provide API key (OpenAI Authorization: Bearer)
           TvCheckboxRow(
             checked = state.settings.useApiKey,
             onCheckedChange = onToggleApiKey,

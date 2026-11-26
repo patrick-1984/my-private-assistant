@@ -341,6 +341,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     _uiState.update { it.copy(testStatus = TestStatus.Idle) }
   }
 
+  fun setIgnoreSsl(enabled: Boolean) {
+    settingsRepo.setIgnoreSsl(enabled)
+    _uiState.update { it.copy(testStatus = TestStatus.Idle) }
+  }
+
   fun setUseApiKey(enabled: Boolean) {
     settingsRepo.setUseApiKey(enabled)
     _uiState.update { it.copy(testStatus = TestStatus.Idle) }
@@ -370,6 +375,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           language = current.language,
           useIpOverride = current.useIpOverride,
           overrideIp = current.overrideIp,
+          ignoreSsl = current.ignoreSsl,
         )
       when (probe) {
         is ProbeResult.Success -> {

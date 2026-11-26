@@ -37,6 +37,7 @@ class EndpointClientTest {
     val calledUrls = mutableListOf<String>()
     var lastHeaders: Map<String, String> = emptyMap()
     var lastTlsServerName: String? = null
+    var lastIgnoreSsl: Boolean = false
 
     override fun postMultipart(
       urlString: String,
@@ -48,10 +49,12 @@ class EndpointClientTest {
       connectTimeoutMs: Int,
       readTimeoutMs: Int,
       tlsServerName: String?,
+      ignoreSsl: Boolean,
     ): HttpResponseData {
       calledUrls.add(urlString)
       lastHeaders = headers
       lastTlsServerName = tlsServerName
+      lastIgnoreSsl = ignoreSsl
       return handler(urlString, headers, fileFieldName, fields, tlsServerName)
     }
   }
@@ -159,7 +162,7 @@ class EndpointClientTest {
         apiKey = "sk-secret",
         detectedEndpointUrl = "http://10.3.3.20:8000/v1/audio/transcriptions",
         detectedFamily = ServerFamily.OPENAI_V1,
-        detectedForInput = "http://10.3.3.20:8000|false|",
+        detectedForInput = "http://10.3.3.20:8000|false||false",
       )
 
     client.transcribe(WavEncoder.silentWav(100), disabledSettings, { _, _ -> }, {})
@@ -232,7 +235,7 @@ class EndpointClientTest {
         endpointInput = "10.3.3.20:8000",
         detectedEndpointUrl = "http://10.3.3.20:8000/audio/transcriptions",
         detectedFamily = ServerFamily.OPENAI_NO_V1,
-        detectedForInput = "10.3.3.20:8000|false|",
+        detectedForInput = "10.3.3.20:8000|false||false",
         language = LanguageOption.POLISH,
       )
 
@@ -258,5 +261,72 @@ class EndpointClientTest {
     assertEquals("RIFF", String(wav, 0, 4, Charsets.US_ASCII))
     assertEquals("WAVE", String(wav, 8, 4, Charsets.US_ASCII))
     assertEquals(44 + 16000, wav.size)
+  }
+
+  @Test
+  fun `ignoreSsl setting is propagated to transport during detectEndpoint and transcribe`() =
+    runTest {
+      val transport = FakeTransport { _, _, _, _, _ -> HttpResponseData(200, """{"text":"ok"}""") }
+      val client = EndpointClient(transport)
+
+      client.detectEndpoint(
+        rawInput = "https://stt.internal.lan",
+        apiKey = "",
+        modelName = "whisper-1",
+        language = LanguageOption.AUTO,
+        useIpOverride = true,
+        overrideIp = "10.3.3.20",
+        ignoreSsl = true,
+      )
+      assertTrue(transport.lastIgnoreSsl)
+
+      val settings =
+        AppSettings(
+          endpointInput = "https://stt.internal.lan",
+          useIpOverride = true,
+          overrideIp = "10.3.3.20",
+          ignoreSsl = true,
+          detectedEndpointUrl = "https://stt.internal.lan/v1/audio/transcriptions",
+          detectedFamily = ServerFamily.OPENAI_V1,
+          detectedForInput = "https://stt.internal.lan|true|10.3.3.20|true",
+        )
+      transport.lastIgnoreSsl = false
+      client.transcribe(WavEncoder.silentWav(100), settings, { _, _ -> }, {})
+      assertTrue(transport.lastIgnoreSsl)
+    }
+
+  @Test
+  fun `readHttp11Response parses Content-Length, 100 Continue, chunked, and Polish UTF-8`() {
+    val json = """{"text":"zażółć gęślą jaźń"}"""
+    val jsonBytes = json.toByteArray(Charsets.UTF_8)
+
+    val fixedRaw =
+      ("HTTP/1.1 100 Continue\r\n\r\n" +
+          "HTTP/1.1 200 OK\r\n" +
+          "Content-Type: application/json; charset=utf-8\r\n" +
+          "Content-Length: ${jsonBytes.size}\r\n" +
+          "\r\n")
+        .toByteArray(Charsets.US_ASCII) + jsonBytes
+
+    val fixedResp =
+      com.example.network.UrlConnectionTransport.readHttp11Response(fixedRaw.inputStream())
+    assertEquals(200, fixedResp.statusCode)
+    assertEquals(json, fixedResp.body)
+
+    val part1 = """{"text":"zażółć """.toByteArray(Charsets.UTF_8)
+    val part2 = """gęślą jaźń"}""".toByteArray(Charsets.UTF_8)
+    val chunkedRaw =
+      ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" +
+          "${part1.size.toString(16)}\r\n")
+        .toByteArray(Charsets.US_ASCII) +
+        part1 +
+        "\r\n${part2.size.toString(16)}\r\n".toByteArray(Charsets.US_ASCII) +
+        part2 +
+        "\r\n0\r\n\r\n".toByteArray(Charsets.US_ASCII)
+
+    val chunkedResp =
+      com.example.network.UrlConnectionTransport.readHttp11Response(chunkedRaw.inputStream())
+    assertEquals(200, chunkedResp.statusCode)
+    assertEquals(json, chunkedResp.body)
   }
 }

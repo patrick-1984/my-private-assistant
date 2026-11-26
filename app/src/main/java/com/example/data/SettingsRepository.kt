@@ -29,6 +29,7 @@ data class AppSettings(
   val endpointInput: String = "",
   val useIpOverride: Boolean = false,
   val overrideIp: String = "",
+  val ignoreSsl: Boolean = false,
   val useApiKey: Boolean = false,
   val detectedEndpointUrl: String = "",
   val detectedFamily: ServerFamily? = null,
@@ -42,7 +43,7 @@ data class AppSettings(
   val lastAssistArgsLog: String = "",
 ) {
   val cacheKey: String
-    get() = "${endpointInput.trim()}|$useIpOverride|${overrideIp.trim()}"
+    get() = "${endpointInput.trim()}|$useIpOverride|${overrideIp.trim()}|$ignoreSsl"
 
   val effectiveApiKey: String
     get() = if (useApiKey) apiKey.trim() else ""
@@ -92,6 +93,7 @@ class SettingsRepository private constructor(context: Context) {
       endpointInput = prefs.getString(KEY_ENDPOINT_INPUT, "") ?: "",
       useIpOverride = prefs.getBoolean(KEY_USE_IP_OVERRIDE, false),
       overrideIp = prefs.getString(KEY_OVERRIDE_IP, "") ?: "",
+      ignoreSsl = prefs.getBoolean(KEY_IGNORE_SSL, false),
       useApiKey = useApiKey,
       detectedEndpointUrl = prefs.getString(KEY_DETECTED_URL, "") ?: "",
       detectedFamily = family,
@@ -116,7 +118,8 @@ class SettingsRepository private constructor(context: Context) {
   fun updateEndpointInput(input: String) {
     val trimmed = input.trim()
     val current = _settings.value
-    val nextCacheKey = "$trimmed|${current.useIpOverride}|${current.overrideIp.trim()}"
+    val nextCacheKey =
+      "$trimmed|${current.useIpOverride}|${current.overrideIp.trim()}|${current.ignoreSsl}"
     prefs.edit().apply {
       putString(KEY_ENDPOINT_INPUT, trimmed)
       if (current.detectedForInput != nextCacheKey) {
@@ -131,7 +134,8 @@ class SettingsRepository private constructor(context: Context) {
 
   fun setUseIpOverride(enabled: Boolean) {
     val current = _settings.value
-    val nextCacheKey = "${current.endpointInput.trim()}|$enabled|${current.overrideIp.trim()}"
+    val nextCacheKey =
+      "${current.endpointInput.trim()}|$enabled|${current.overrideIp.trim()}|${current.ignoreSsl}"
     prefs.edit().apply {
       putBoolean(KEY_USE_IP_OVERRIDE, enabled)
       if (current.detectedForInput != nextCacheKey) {
@@ -147,9 +151,26 @@ class SettingsRepository private constructor(context: Context) {
   fun updateOverrideIp(ip: String) {
     val trimmed = ip.trim()
     val current = _settings.value
-    val nextCacheKey = "${current.endpointInput.trim()}|${current.useIpOverride}|$trimmed"
+    val nextCacheKey =
+      "${current.endpointInput.trim()}|${current.useIpOverride}|$trimmed|${current.ignoreSsl}"
     prefs.edit().apply {
       putString(KEY_OVERRIDE_IP, trimmed)
+      if (current.detectedForInput != nextCacheKey) {
+        remove(KEY_DETECTED_URL)
+        remove(KEY_DETECTED_FAMILY)
+        remove(KEY_DETECTED_FOR_INPUT)
+      }
+      apply()
+    }
+    _settings.value = readFromPrefs()
+  }
+
+  fun setIgnoreSsl(enabled: Boolean) {
+    val current = _settings.value
+    val nextCacheKey =
+      "${current.endpointInput.trim()}|${current.useIpOverride}|${current.overrideIp.trim()}|$enabled"
+    prefs.edit().apply {
+      putBoolean(KEY_IGNORE_SSL, enabled)
       if (current.detectedForInput != nextCacheKey) {
         remove(KEY_DETECTED_URL)
         remove(KEY_DETECTED_FAMILY)
@@ -225,6 +246,7 @@ class SettingsRepository private constructor(context: Context) {
     private const val KEY_ENDPOINT_INPUT = "endpoint_input"
     private const val KEY_USE_IP_OVERRIDE = "use_ip_override"
     private const val KEY_OVERRIDE_IP = "override_ip"
+    private const val KEY_IGNORE_SSL = "ignore_ssl"
     private const val KEY_USE_API_KEY = "use_api_key"
     private const val KEY_DETECTED_URL = "detected_url"
     private const val KEY_DETECTED_FAMILY = "detected_family"

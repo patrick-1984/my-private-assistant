@@ -1,25 +1,37 @@
 package com.example.network
 
+import android.annotation.SuppressLint
 import com.example.audio.WavEncoder
 import com.example.data.AppSettings
 import com.example.data.LanguageOption
 import com.example.data.ServerFamily
+import java.io.BufferedInputStream
 import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
+import java.io.EOFException
 import java.io.IOException
+import java.io.InputStream
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
+import java.net.IDN
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URI
 import java.net.URL
 import java.net.URLEncoder
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
 import java.util.UUID
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SNIHostName
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLPeerUnverifiedException
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -61,54 +73,39 @@ interface HttpTransport {
     connectTimeoutMs: Int,
     readTimeoutMs: Int,
     tlsServerName: String? = null,
+    ignoreSsl: Boolean = false,
   ): HttpResponseData
 }
 
-private class SniSocketFactory(
-  private val delegate: SSLSocketFactory,
-  private val sniHostname: String,
-) : SSLSocketFactory() {
-
-  override fun getDefaultCipherSuites(): Array<String> = delegate.defaultCipherSuites
-
-  override fun getSupportedCipherSuites(): Array<String> = delegate.supportedCipherSuites
-
-  override fun createSocket(): Socket = configureSni(delegate.createSocket())
-
-  override fun createSocket(s: Socket?, host: String?, port: Int, autoClose: Boolean): Socket =
-    configureSni(delegate.createSocket(s, sniHostname, port, autoClose))
-
-  override fun createSocket(host: String?, port: Int): Socket =
-    configureSni(delegate.createSocket(host, port))
-
-  override fun createSocket(
-    host: String?,
-    port: Int,
-    localHost: InetAddress?,
-    localPort: Int,
-  ): Socket = configureSni(delegate.createSocket(host, port, localHost, localPort))
-
-  override fun createSocket(host: InetAddress?, port: Int): Socket =
-    configureSni(delegate.createSocket(host, port))
-
-  override fun createSocket(
-    address: InetAddress?,
-    port: Int,
-    localAddress: InetAddress?,
-    localPort: Int,
-  ): Socket = configureSni(delegate.createSocket(address, port, localAddress, localPort))
-
-  private fun configureSni(socket: Socket): Socket {
-    if (socket is SSLSocket) {
-      val params = socket.sslParameters
-      params.serverNames = listOf(SNIHostName(sniHostname))
-      socket.sslParameters = params
-    }
-    return socket
-  }
-}
-
 object UrlConnectionTransport : HttpTransport {
+
+  @SuppressLint("CustomX509TrustManager", "TrustAllX509TrustManager")
+  private fun trustAllSslSocketFactory(): SSLSocketFactory {
+    val trustAll =
+      arrayOf<TrustManager>(
+        object : X509TrustManager {
+          override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+
+          override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+
+          override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+        }
+      )
+    val sslContext = SSLContext.getInstance("TLS")
+    sslContext.init(null, trustAll, SecureRandom())
+    return sslContext.socketFactory
+  }
+
+  private fun validateHostnameForSni(host: String): Boolean {
+    if (host.isBlank()) return false
+    if (host.contains(':')) return false // IPv6 literal
+    val parts = host.split('.')
+    if (parts.size == 4 && parts.all { p -> p.isNotEmpty() && p.all { it.isDigit() } }) {
+      return false // IPv4 literal
+    }
+    return true
+  }
+
   override fun postMultipart(
     urlString: String,
     headers: Map<String, String>,
@@ -119,6 +116,7 @@ object UrlConnectionTransport : HttpTransport {
     connectTimeoutMs: Int,
     readTimeoutMs: Int,
     tlsServerName: String?,
+    ignoreSsl: Boolean,
   ): HttpResponseData {
     val boundary = "----TvVoiceSearch${UUID.randomUUID().toString().replace("-", "")}"
     val bodyOut = ByteArrayOutputStream()
@@ -142,15 +140,28 @@ object UrlConnectionTransport : HttpTransport {
     writeUtf8("\r\n--$boundary--\r\n")
 
     val payload = bodyOut.toByteArray()
+
+    // When routing to an override IP (indicated by Host header or tlsServerName), use a direct
+    // Socket / SSLSocket HTTP/1.1 connection so Android's HttpURLConnection/OkHttp layer cannot
+    // overwrite TLS SNI with the IP literal (which causes TLSV1_ALERT_UNRECOGNIZED_NAME).
+    if (!tlsServerName.isNullOrBlank() || headers.containsKey("Host")) {
+      return postDirectHttp11(
+        urlString = urlString,
+        headers = headers,
+        boundary = boundary,
+        payload = payload,
+        connectTimeoutMs = connectTimeoutMs,
+        readTimeoutMs = readTimeoutMs,
+        tlsServerName = tlsServerName,
+        ignoreSsl = ignoreSsl,
+      )
+    }
+
     val conn = (URL(urlString).openConnection() as HttpURLConnection)
     try {
-      if (conn is HttpsURLConnection && !tlsServerName.isNullOrBlank()) {
-        conn.sslSocketFactory =
-          SniSocketFactory(HttpsURLConnection.getDefaultSSLSocketFactory(), tlsServerName)
-        conn.hostnameVerifier =
-          HostnameVerifier { _, session ->
-            HttpsURLConnection.getDefaultHostnameVerifier().verify(tlsServerName, session)
-          }
+      if (conn is HttpsURLConnection && ignoreSsl) {
+        conn.sslSocketFactory = trustAllSslSocketFactory()
+        conn.hostnameVerifier = HostnameVerifier { _, _ -> true }
       }
 
       conn.requestMethod = "POST"
@@ -182,6 +193,191 @@ object UrlConnectionTransport : HttpTransport {
       return HttpResponseData(status, responseText)
     } finally {
       conn.disconnect()
+    }
+  }
+
+  private fun postDirectHttp11(
+    urlString: String,
+    headers: Map<String, String>,
+    boundary: String,
+    payload: ByteArray,
+    connectTimeoutMs: Int,
+    readTimeoutMs: Int,
+    tlsServerName: String?,
+    ignoreSsl: Boolean,
+  ): HttpResponseData {
+    val uri = URI(urlString)
+    val isHttps = uri.scheme.equals("https", ignoreCase = true)
+    val connectIp = uri.host.removeSurrounding("[", "]")
+    val port = if (uri.port != -1) uri.port else if (isHttps) 443 else 80
+    val pathPart = uri.rawPath.orEmpty().ifEmpty { "/" }
+    val queryPart = uri.rawQuery?.let { "?$it" }.orEmpty()
+    val requestTarget = "$pathPart$queryPart"
+    val hostHeader = headers["Host"] ?: if (uri.port != -1) "$connectIp:$port" else connectIp
+
+    val tcpSocket = Socket()
+    var activeSocket: Socket = tcpSocket
+    try {
+      // Numeric IP InetAddress does not trigger DNS lookup
+      val addr = InetAddress.getByName(connectIp)
+      tcpSocket.connect(InetSocketAddress(addr, port), connectTimeoutMs)
+      tcpSocket.soTimeout = readTimeoutMs
+
+      if (isHttps) {
+        val factory =
+          if (ignoreSsl) trustAllSslSocketFactory()
+          else HttpsURLConnection.getDefaultSSLSocketFactory()
+        val sniHost = (tlsServerName ?: hostHeader.substringBefore(':')).trim()
+        val asciiSni = IDN.toASCII(sniHost)
+        val isHostname = asciiSni.isNotBlank() && validateHostnameForSni(asciiSni)
+        val peerHost = if (isHostname) asciiSni else connectIp
+        val sslSocket =
+          factory.createSocket(tcpSocket, peerHost, port, true) as SSLSocket
+        activeSocket = sslSocket
+
+        val params = sslSocket.sslParameters
+        if (isHostname) {
+          params.serverNames = listOf(SNIHostName(asciiSni))
+        }
+        if (!ignoreSsl) {
+          params.endpointIdentificationAlgorithm = "HTTPS"
+        }
+        sslSocket.sslParameters = params
+        sslSocket.startHandshake()
+
+        if (!ignoreSsl) {
+          val ok =
+            HttpsURLConnection.getDefaultHostnameVerifier().verify(asciiSni, sslSocket.session)
+          if (!ok) {
+            throw SSLPeerUnverifiedException("Certificate hostname mismatch for $asciiSni")
+          }
+        }
+      }
+
+      val out = activeSocket.getOutputStream()
+      val headerText = buildString {
+        append("POST $requestTarget HTTP/1.1\r\n")
+        append("Host: $hostHeader\r\n")
+        append("User-Agent: TVVoiceSearch/1.0\r\n")
+        append("Accept: application/json, text/plain;q=0.9\r\n")
+        append("Accept-Encoding: identity\r\n")
+        append("Content-Type: multipart/form-data; boundary=$boundary\r\n")
+        append("Content-Length: ${payload.size}\r\n")
+        for ((k, v) in headers) {
+          if (!k.equals("Host", ignoreCase = true)) {
+            append("$k: $v\r\n")
+          }
+        }
+        append("Connection: close\r\n\r\n")
+      }
+      out.write(headerText.toByteArray(Charsets.US_ASCII))
+      out.write(payload)
+      out.flush()
+
+      return readHttp11Response(BufferedInputStream(activeSocket.getInputStream()))
+    } finally {
+      runCatching { activeSocket.close() }
+      runCatching { tcpSocket.close() }
+    }
+  }
+
+  internal fun readHttp11Response(input: InputStream): HttpResponseData {
+    var statusCode: Int
+    val responseHeaders = linkedMapOf<String, String>()
+
+    while (true) {
+      val statusLine = readAsciiLine(input) ?: throw EOFException("Empty HTTP response")
+      if (statusLine.isEmpty()) continue
+      val parts = statusLine.split(' ', limit = 3)
+      statusCode =
+        parts.getOrNull(1)?.toIntOrNull()
+          ?: throw IOException("Malformed HTTP status line: $statusLine")
+
+      responseHeaders.clear()
+      while (true) {
+        val line = readAsciiLine(input) ?: break
+        if (line.isEmpty()) break
+        val idx = line.indexOf(':')
+        if (idx > 0) {
+          val name = line.substring(0, idx).trim().lowercase()
+          val value = line.substring(idx + 1).trim()
+          val existing = responseHeaders[name]
+          responseHeaders[name] = if (existing == null) value else "$existing, $value"
+        }
+      }
+
+      if (statusCode != 100) break
+    }
+
+    val transferEncoding = responseHeaders["transfer-encoding"].orEmpty().lowercase()
+    val contentLength = responseHeaders["content-length"]?.toIntOrNull()
+
+    val bodyBytes =
+      when {
+        transferEncoding.contains("chunked") -> readChunkedBody(input)
+        contentLength != null && contentLength >= 0 -> readFixedBody(input, contentLength)
+        else -> input.readBytes()
+      }
+
+    return HttpResponseData(statusCode, bodyBytes.toString(Charsets.UTF_8))
+  }
+
+  private fun readFixedBody(input: InputStream, length: Int): ByteArray {
+    if (length == 0) return ByteArray(0)
+    val out = ByteArrayOutputStream(length)
+    val buf = ByteArray(minOf(8192, length))
+    var remaining = length
+    while (remaining > 0) {
+      val read = input.read(buf, 0, minOf(buf.size, remaining))
+      if (read <= 0) break
+      out.write(buf, 0, read)
+      remaining -= read
+    }
+    return out.toByteArray()
+  }
+
+  private fun readChunkedBody(input: InputStream): ByteArray {
+    val out = ByteArrayOutputStream()
+    while (true) {
+      val sizeLine = readAsciiLine(input) ?: break
+      val chunkSizeHex = sizeLine.substringBefore(';').trim()
+      val chunkSize = chunkSizeHex.toIntOrNull(16) ?: break
+      if (chunkSize == 0) {
+        // Consume trailing headers if any
+        while (true) {
+          val trailer = readAsciiLine(input)
+          if (trailer.isNullOrEmpty()) break
+        }
+        break
+      }
+      val buf = ByteArray(chunkSize)
+      var offset = 0
+      while (offset < chunkSize) {
+        val read = input.read(buf, offset, chunkSize - offset)
+        if (read <= 0) throw EOFException("Truncated HTTP chunk")
+        offset += read
+      }
+      out.write(buf)
+      readAsciiLine(input) // consume CRLF after chunk data
+    }
+    return out.toByteArray()
+  }
+
+  private fun readAsciiLine(input: InputStream): String? {
+    val out = ByteArrayOutputStream()
+    var prevWasCr = false
+    while (true) {
+      val b = input.read()
+      if (b == -1) {
+        return if (out.size() == 0) null else out.toByteArray().toString(Charsets.US_ASCII)
+      }
+      if (b == '\n'.code) {
+        val bytes = out.toByteArray()
+        val len = if (prevWasCr && bytes.isNotEmpty()) bytes.size - 1 else bytes.size
+        return String(bytes, 0, len, Charsets.US_ASCII)
+      }
+      prevWasCr = (b == '\r'.code)
+      out.write(b)
     }
   }
 }
@@ -346,6 +542,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
     language: LanguageOption,
     useIpOverride: Boolean = false,
     overrideIp: String = "",
+    ignoreSsl: Boolean = false,
   ): ProbeResult =
     withContext(Dispatchers.IO) {
       val normalized =
@@ -373,6 +570,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           modelName = modelName,
           language = language,
           validatedOverrideIp = validatedIp,
+          ignoreSsl = ignoreSsl,
         )
       if (primaryOutcome.result != null) {
         return@withContext primaryOutcome.result
@@ -388,6 +586,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
             modelName = modelName,
             language = language,
             validatedOverrideIp = validatedIp,
+            ignoreSsl = ignoreSsl,
           )
         if (httpsOutcome.result != null) {
           return@withContext httpsOutcome.result
@@ -415,6 +614,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
     modelName: String,
     language: LanguageOption,
     validatedOverrideIp: String?,
+    ignoreSsl: Boolean,
   ): ProbeBatchOutcome {
     var hadConnectionError = false
     var lastError: String? = null
@@ -431,6 +631,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
             modelName = modelName,
             language = language,
             validatedOverrideIp = validatedOverrideIp,
+            ignoreSsl = ignoreSsl,
             connectTimeoutMs = PROBE_TIMEOUT_MS,
             readTimeoutMs = PROBE_TIMEOUT_MS,
           )
@@ -458,7 +659,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
                   url = candidate.url,
                   family = candidate.family,
                   message =
-                    "Needs an API key (HTTP ${response.statusCode}). Fill in Advanced -> API key.",
+                    "Needs an API key (HTTP ${response.statusCode}). Enable 'Provide API key' above.",
                 ),
               hadConnectionError = false,
               lastError = null,
@@ -531,6 +732,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
               language = settings.language,
               useIpOverride = settings.useIpOverride,
               overrideIp = settings.overrideIp,
+              ignoreSsl = settings.ignoreSsl,
             )
         ) {
           is ProbeResult.Success -> {
@@ -561,6 +763,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           modelName = settings.modelName,
           language = settings.language,
           validatedOverrideIp = validatedIp,
+          ignoreSsl = settings.ignoreSsl,
           refreshed = refreshed,
         )
 
@@ -575,6 +778,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
               language = settings.language,
               useIpOverride = settings.useIpOverride,
               overrideIp = settings.overrideIp,
+              ignoreSsl = settings.ignoreSsl,
             )
         ) {
           is ProbeResult.Success -> {
@@ -589,6 +793,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
                   modelName = settings.modelName,
                   language = settings.language,
                   validatedOverrideIp = validatedIp,
+                  ignoreSsl = settings.ignoreSsl,
                   refreshed = true,
                 )
             ) {
@@ -630,6 +835,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
     modelName: String,
     language: LanguageOption,
     validatedOverrideIp: String?,
+    ignoreSsl: Boolean,
     refreshed: Boolean,
   ): InternalTranscribeOutcome {
     return try {
@@ -642,6 +848,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           modelName = modelName,
           language = language,
           validatedOverrideIp = validatedOverrideIp,
+          ignoreSsl = ignoreSsl,
           connectTimeoutMs = TRANSCRIBE_CONNECT_TIMEOUT_MS,
           readTimeoutMs = TRANSCRIBE_READ_TIMEOUT_MS,
         )
@@ -689,6 +896,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
     modelName: String,
     language: LanguageOption,
     validatedOverrideIp: String?,
+    ignoreSsl: Boolean,
     connectTimeoutMs: Int,
     readTimeoutMs: Int,
   ): HttpResponseData {
@@ -738,6 +946,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
       connectTimeoutMs = connectTimeoutMs,
       readTimeoutMs = readTimeoutMs,
       tlsServerName = target.tlsServerName,
+      ignoreSsl = ignoreSsl,
     )
   }
 
