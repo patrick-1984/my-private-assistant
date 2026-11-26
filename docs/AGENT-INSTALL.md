@@ -4,7 +4,8 @@ This guide is written **for an AI coding agent** (Claude Code, Codex, Gemini CLI
 user's computer. A human can follow it too. The shorter human guide is [`INSTALL.md`](INSTALL.md).
 
 Goal: install TV Voice Search on the user's Android TV / Google TV, make it the default assistant and
-speech recognizer, and (if the APK supports it) turn on the mic-key accessibility service.
+speech recognizer, and turn on the mic-key accessibility service (`MicKeyService`, app version 1.1 and
+newer) so the mic button also works inside other apps and "Search in the current app" can work.
 
 Assume **only `adb`** on the user's computer. There are no other remote tools.
 
@@ -15,15 +16,16 @@ Constants used below:
 | Package | `com.aistudio.tvvoicesearch.qkmzpx` |
 | Assistant service | `com.aistudio.tvvoicesearch.qkmzpx/com.example.AssistService` |
 | Recognizer service | `com.aistudio.tvvoicesearch.qkmzpx/com.example.RecognizerService` |
-| Accessibility service (newer versions only) | `com.aistudio.tvvoicesearch.qkmzpx/com.example.MicKeyService` |
+| Accessibility service (version 1.1+) | `com.aistudio.tvvoicesearch.qkmzpx/com.example.MicKeyService` |
 | Releases | https://github.com/patrick-1984/my-private-assistant/releases |
 
 ## Ground rules
 
 1. **Ask the user before every step that changes the TV** (install, `settings put`, `pm grant`,
    uninstall). Read-only commands (`getprop`, `settings get`, `dumpsys`) need no confirmation.
-2. **Never put secrets into logs, commands or chat.** The user types the transcription server URL and API
-   key on the TV, in the app. Do not ask for the API key, and do not echo it.
+2. **Never put secrets into logs, commands or chat.** The user types the transcription endpoint and API
+   key on the TV, in the app. Do not ask for the API key, and do not echo it. To help the user choose an
+   endpoint (self-hosted or hosted, including NVIDIA), use [`ENDPOINTS.md`](ENDPOINTS.md).
 3. **Record the original values** before you change any setting (step 5 and step 6). Show them to the
    user and keep them in this session (or a local file the user agrees to), so they can be restored.
 4. **Everything must be reversible.** Step 8 undoes every change. No root is needed anywhere. Do not
@@ -135,8 +137,13 @@ adb shell getprop ro.product.cpu.abilist
 
 1. Find the latest release: https://github.com/patrick-1984/my-private-assistant/releases/latest
    (or `gh release view -R patrick-1984/my-private-assistant` if the GitHub CLI is installed).
-   Download the `*.apk` asset (named `tv-voice-search-<version>.apk`) and `SHA256SUMS`.
-   **If no release exists yet, stop and tell the user**: builds are published by the maintainer.
+   Download the `*.apk` asset (named `tv-voice-search-<version>.apk`, for example
+   `tv-voice-search-1.0.0.apk`) and `SHA256SUMS`. There is **one universal APK** (no native code): it
+   runs on 32-bit (`armeabi-v7a`) and 64-bit (`arm64-v8a`) devices. The release number can differ from
+   the version the app reports (release v1.0.0 contains app version 1.1, versionCode 2, set by AI
+   Studio). Release builds are signed with the repository's own key, not AI Studio's: if an AI Studio
+   build is installed, see the `INSTALL_FAILED_UPDATE_INCOMPATIBLE` note below.
+   **If no release exists, stop and tell the user**: builds are published by the maintainer.
 
    ```sh
    # with the GitHub CLI (any OS)
@@ -163,8 +170,11 @@ adb shell getprop ro.product.cpu.abilist
    ```
 
    `-r` keeps the app's data when updating. If the install fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`,
-   an older copy signed with a different key is installed: ask the user before running
-   `adb uninstall com.aistudio.tvvoicesearch.qkmzpx` (this deletes the app's settings) and installing again.
+   a copy signed with a different key is installed. This happens when switching between a Google AI
+   Studio build and a GitHub release (they are signed with different keys; the package id is the same).
+   Ask the user before running `adb uninstall com.aistudio.tvvoicesearch.qkmzpx` (this deletes the app's
+   settings and drops its assistant, recognizer and accessibility roles), then install again and repeat
+   steps 4 to 6.
 
 ## Step 4 - First start, mic permission, endpoint
 
@@ -181,7 +191,8 @@ adb shell getprop ro.product.cpu.abilist
    ```
 
 3. The user opens the app's **Settings** (gear icon) on the TV, enters the transcription endpoint under
-   **1. Transcription Endpoint**, and presses **Test**. Explain the input rules:
+   **1. Transcription Endpoint**, and presses **Test Connection**. If the user has no endpoint yet, help
+   them choose one with [`ENDPOINTS.md`](ENDPOINTS.md). Explain the input rules:
 
    - A bare host and port is fine: `<your-server>:<port>`. Without a scheme the app tries `http://` first,
      then `https://`.
@@ -191,12 +202,35 @@ adb shell getprop ro.product.cpu.abilist
    - A URL ending in `/v1` gets `/audio/transcriptions` appended (never a second `/v1`). A full path
      such as `.../v1/audio/transcriptions`, `.../inference` or `.../asr` is used as given.
    - **Provide API key**: only if the server needs one. The key is sent as `Authorization: Bearer <key>`.
-     The user types it on the TV, not into the agent.
+     The user types it on the TV, not into the agent. For a service on the internet use an explicit
+     `https://` address: without a scheme the app tries `http://` first and would send the key in clear
+     text. When switching endpoints, turn off or replace the old key.
+   - The endpoint must answer with JSON containing `text`, and must accept the model name `whisper-1` for
+     the first test (the model field appears only after a successful test). See
+     [`ENDPOINTS.md`](ENDPOINTS.md).
    - **Override server IP address**: only if the TV cannot resolve the hostname. The app connects to that
      IP but keeps the hostname for TLS SNI and the `Host` header.
    - **Ignore SSL certificate checks**: only for a self-signed certificate on a trusted network.
-   - Under **2. Target App** the user picks the app that receives the text (default SmartTube).
-   - Under **3. Language**: Auto, or a fixed language.
+   - **Model:** the app sends `whisper-1` unless the user turns on **Pick custom model / endpoint**. That
+     option appears only after a successful test. It lists the models the server reports at
+     `/v1/models` (if any) and has a field to type a model name.
+   - **Live transcription (chunked streaming)** (also after a successful test, off by default): shows
+     words while the user speaks by sending partial audio to the endpoint about once a second. It causes
+     more requests; leave it off for paid or rate-limited services.
+   - Under **2. Target & Current-App Search**:
+     - **Default target app**: the app that gets the text on the home screen, or when the current app
+       cannot search. Default: SmartTube. Any listed app can be chosen (NewPipe, a browser, ...). Each
+       app shows how the text is handed over (for example "YouTube search URI", "Search intent",
+       "Share text", "Clipboard + launch") and a status (Unknown / Confirmed / Not working).
+       **Test search** sends "test search" to the app and asks whether results appeared;
+       **Never use this app** excludes it.
+     - **Search in the current app** (on by default): the text goes to the app the user is in, if that
+       app has a direct hand-over (search link, search intent or "Share text"; not "Clipboard + launch")
+       or the user marked it Confirmed with **Test search**, and it is not marked Not working. Otherwise
+       the text goes to the default target. An app that only accepts shared text counts as searchable;
+       if it does something else with the text, the user marks it **Never use this app**.
+       This needs `MicKeyService` (step 6): it is what tells the app which app is in front.
+   - Under **3. Language**: Auto, Polish or English. Auto sends no language and lets the server detect it.
 
    The Test must report success before you continue. If it fails, check from the TV's point of view:
    same network, port open, correct path.
@@ -228,17 +262,32 @@ adb shell getprop ro.product.cpu.abilist
    ```
 
    The output must mention `com.aistudio.tvvoicesearch.qkmzpx`. The app's **Settings >
-   5. Assistant & Recognizer Status** (press **Refresh Status**) shows the same.
+   5. Assistant & Service Status** (press **Refresh Status**) shows the same.
 
-## Step 6 - Mic key inside other apps (only if the APK has `MicKeyService`)
+   Note: the **ADB Setup Commands** box in that section also contains an
+   `enabled_accessibility_services` line that **replaces** the whole list, and the **ADB Undo Commands**
+   box sets it to `""` (turns off all accessibility services). Do not paste those lines; use step 6 and
+   step 8 instead, which keep the user's other services.
+
+## Step 6 - Mic key inside other apps and current-app search (`MicKeyService`)
 
 Why: from the home screen the mic button reaches the assistant (step 5). Inside another app (for example
 SmartTube) the remote sends a plain `KEYCODE_SEARCH` key that the app in front consumes, so the assistant
-is never called. `MicKeyService` is an AccessibilityService that filters only the `KEYCODE_SEARCH`,
-`KEYCODE_ASSIST` and `KEYCODE_VOICE_ASSIST` keys and opens TV Voice Search. **It reads no screen content.**
-Tell the user this in plain words before asking for consent.
+is never called. `MicKeyService` is an AccessibilityService that:
 
-1. Check whether the installed APK declares it (read-only):
+- filters only the `KEYCODE_SEARCH`, `KEYCODE_ASSIST` and `KEYCODE_VOICE_ASSIST` keys and opens
+  TV Voice Search (all other keys pass through untouched);
+- listens only to "window changed" events to learn the **package name of the app in front** (for
+  example `org.smarttube.stable`). This is what lets **Search in the current app** send the text to
+  that app.
+
+**It reads no screen text or UI content** (`canRetrieveWindowContent="false"`). Tell the user this in
+plain words before asking for consent. The user can switch the key capture off later in the app:
+**Settings > 4. Remote Mic & Audio > Mic button capture**. That switch stops only the key capture; the
+service still notes the app in front until it is removed from `enabled_accessibility_services`
+(step 8).
+
+1. Check that the installed APK declares it (read-only). Version 1.1 and newer include it:
 
    ```sh
    adb shell "dumpsys package com.aistudio.tvvoicesearch.qkmzpx | grep MicKeyService"
@@ -251,8 +300,9 @@ Tell the user this in plain words before asking for consent.
    ```
 
    (look for `com.aistudio.tvvoicesearch.qkmzpx/com.example.MicKeyService`).
-   **If it is not found, skip this step** and tell the user: "This version does not include the mic-key
-   service yet. The mic button works from the home screen. Inside other apps it needs a later version."
+   **If it is not found** (an APK older than 1.1), skip this step and tell the user: "This version does
+   not include the mic-key service. The mic button works from the home screen only. Install the latest
+   release to use it inside other apps."
 
 2. Record the current values:
 
@@ -273,14 +323,18 @@ Tell the user this in plain words before asking for consent.
    adb shell settings put secure accessibility_enabled 1
    ```
 
-5. Verify with `adb shell settings get secure enabled_accessibility_services`.
+5. Verify with `adb shell settings get secure enabled_accessibility_services`. The app's
+   **Settings > 5. Assistant & Service Status** shows **Mic Key Accessibility Service** as active.
 
 ## Step 7 - Test with the user
 
 1. Ask the user to go to the **Google TV home screen**, press the remote's mic button and say something.
    TV Voice Search should open, record, and show the text in the target app's search.
-2. If step 6 was done: ask the user to open **SmartTube**, press the mic button and speak. TV Voice Search
-   should open on top and hand the text to SmartTube's search.
+2. If step 6 was done: ask the user to open **SmartTube** (or another app with search), press the mic
+   button and speak. TV Voice Search should open on top and, with **Search in the current app** on,
+   hand the text to that app's search. In an app without a search hand-over, the text goes to the
+   default target app. If the hand-over fails, the app keeps the text and shows
+   "Send query to another app:" with a short list of apps to pick from.
 3. Logs (read-only; clear first with `adb logcat -c` if you want a clean run, then reproduce):
 
    ```sh
@@ -288,7 +342,9 @@ Tell the user this in plain words before asking for consent.
    ```
 
    PowerShell: `adb logcat -d | Select-String -Pattern "TVVoice|AtvRemote"`.
-   The app logs with the tags `TVVoiceAssist` and `TVVoiceRecognizer`. `AtvRemote` lines show the
+   The app logs with the tags `TVVoiceAssist`, `TVVoiceRecorder` and `TVVoiceRecognizer`.
+   `TVVoiceAssist` lines such as `source_package=...`, `Trying current app` and `Using configured default
+   app` show which app received the text and why. `AtvRemote` lines show the
    remote's key and mic events. Do not paste logs that contain the server URL or keys into public places.
 
 ## Step 8 - Undo / restore
@@ -311,7 +367,8 @@ Always prefer the values recorded in steps 5 and 6. Ask before each change.
    - `voice_recognition_service`:
      `com.google.android.katniss/com.google.android.apps.tvsearch.voice.recognition.KatnissRecognitionService`
 
-   (The app's **ADB Undo Commands** box in Settings shows the same commands.)
+   (The app's **ADB Undo Commands** box in Settings shows the same commands, plus a line that clears
+   **all** accessibility services; see the note in step 5.)
 
 2. Accessibility (if step 6 was done): put back the recorded `enabled_accessibility_services` value
    (or remove only the `MicKeyService` entry from the list), and the recorded `accessibility_enabled` value.
@@ -326,6 +383,8 @@ Always prefer the values recorded in steps 5 and 6. Ask before each change.
 
 ## Known limits
 
+- "Search in the current app" works only with `MicKeyService` on (step 6). Without it the text always
+  goes to the default target app.
 - SmartTube receives the text through a YouTube search-results link
   (`https://www.youtube.com/results?search_query=<q>`) sent only to the SmartTube package. Nothing is
   sent to YouTube by this app.
