@@ -70,12 +70,15 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
 
       - uses: android-actions/setup-android@v3
+        with:
+          # The legacy 'tools' package no longer exists; AGP downloads the compile SDK it needs.
+          packages: platform-tools
 
       - uses: gradle/actions/setup-gradle@v4
         with:
