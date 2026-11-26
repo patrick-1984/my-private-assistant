@@ -123,6 +123,26 @@ jobs:
           (cd dist && sha256sum "tv-voice-search-${VERSION}.apk" > SHA256SUMS)
           cat dist/SHA256SUMS
 
+      - name: Verify APK (signature, SDK levels, CPU support)
+        run: |
+          apk="dist/tv-voice-search-${VERSION}.apk"
+          bt="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)"
+          "$bt/apksigner" verify --verbose --print-certs "$apk" | grep -E 'Verified using|Signer #1 certificate (DN|SHA-256)'
+          "$bt/aapt2" dump badging "$apk" | grep -E "^(package|sdkVersion|targetSdkVersion|native-code|uses-feature|leanback-launchable)" || true
+          libs="$(unzip -l "$apk" | awk '{print $4}' | grep '^lib/' || true)"
+          {
+            echo "## APK check"
+            echo
+            if [ -z "$libs" ]; then
+              echo "No native libraries: one universal APK runs on armeabi-v7a (32-bit), arm64-v8a (64-bit) and x86/x86_64 devices."
+            else
+              echo "Native libraries found:"
+              echo '```'
+              echo "$libs"
+              echo '```'
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY" > dist/APK-CHECK.md
+
       - name: Remove keystores
         if: always()
         run: rm -f "$RUNNER_TEMP/upload.jks" debug.keystore
@@ -143,6 +163,7 @@ jobs:
           name: TV Voice Search ${{ inputs.version }}
           target_commitish: ${{ github.sha }}
           fail_on_unmatched_files: true
+          body_path: dist/APK-CHECK.md
           files: |
             dist/tv-voice-search-${{ inputs.version }}.apk
             dist/SHA256SUMS
