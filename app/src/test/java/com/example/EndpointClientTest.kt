@@ -25,6 +25,14 @@ import org.robolectric.annotation.Config
 class EndpointClientTest {
 
   private class FakeTransport(
+    private val getHandler:
+      (
+        url: String,
+        headers: Map<String, String>,
+        tlsServerName: String?,
+        ignoreSsl: Boolean,
+      ) -> HttpResponseData =
+      { _, _, _, _ -> HttpResponseData(404, "") },
     private val handler:
       (
         url: String,
@@ -32,12 +40,13 @@ class EndpointClientTest {
         fileField: String,
         fields: Map<String, String>,
         tlsServerName: String?,
-      ) -> HttpResponseData
+      ) -> HttpResponseData,
   ) : HttpTransport {
     val calledUrls = mutableListOf<String>()
     var lastHeaders: Map<String, String> = emptyMap()
     var lastTlsServerName: String? = null
     var lastIgnoreSsl: Boolean = false
+    var lastFields: Map<String, String> = emptyMap()
 
     override fun postMultipart(
       urlString: String,
@@ -55,7 +64,23 @@ class EndpointClientTest {
       lastHeaders = headers
       lastTlsServerName = tlsServerName
       lastIgnoreSsl = ignoreSsl
+      lastFields = fields
       return handler(urlString, headers, fileFieldName, fields, tlsServerName)
+    }
+
+    override fun getJson(
+      urlString: String,
+      headers: Map<String, String>,
+      connectTimeoutMs: Int,
+      readTimeoutMs: Int,
+      tlsServerName: String?,
+      ignoreSsl: Boolean,
+    ): HttpResponseData {
+      calledUrls.add("GET:$urlString")
+      lastHeaders = headers
+      lastTlsServerName = tlsServerName
+      lastIgnoreSsl = ignoreSsl
+      return getHandler(urlString, headers, tlsServerName, ignoreSsl)
     }
   }
 
@@ -328,5 +353,75 @@ class EndpointClientTest {
       com.example.network.UrlConnectionTransport.readHttp11Response(chunkedRaw.inputStream())
     assertEquals(200, chunkedResp.statusCode)
     assertEquals(json, chunkedResp.body)
+  }
+
+  @Test
+  fun `detectEndpoint queries OpenAI v1 models with override headers and populates availableModels`() =
+    runTest {
+      val transport =
+        FakeTransport(
+          getHandler = { url, headers, sni, ignoreSsl ->
+            if (
+              url == "https://10.3.3.20:8443/v1/models" &&
+                headers["Host"] == "stt.internal.lan:8443" &&
+                sni == "stt.internal.lan" &&
+                ignoreSsl
+            ) {
+              HttpResponseData(
+                200,
+                """{"data":[{"id":"whisper-1"},{"id":"Systran/faster-whisper-large-v3"}]}""",
+              )
+            } else {
+              HttpResponseData(404, "")
+            }
+          },
+          handler = { url, _, _, _, _ ->
+            if (url == "https://10.3.3.20:8443/v1/audio/transcriptions") {
+              HttpResponseData(200, """{"text":""}""")
+            } else {
+              HttpResponseData(404, "")
+            }
+          },
+        )
+      val client = EndpointClient(transport)
+
+      val probe =
+        client.detectEndpoint(
+          rawInput = "https://stt.internal.lan:8443",
+          apiKey = "sk-key",
+          modelName = "whisper-1",
+          language = LanguageOption.AUTO,
+          useIpOverride = true,
+          overrideIp = "10.3.3.20",
+          ignoreSsl = true,
+        )
+
+      assertTrue(probe is ProbeResult.Success)
+      assertEquals(
+        listOf("whisper-1", "Systran/faster-whisper-large-v3"),
+        (probe as ProbeResult.Success).availableModels,
+      )
+    }
+
+  @Test
+  fun `transcribe uses custom model only when useCustomModel is enabled`() = runTest {
+    val transport = FakeTransport { _, _, _, _, _ -> HttpResponseData(200, """{"text":"ok"}""") }
+    val client = EndpointClient(transport)
+
+    val base =
+      AppSettings(
+        endpointInput = "http://10.3.3.20:8000",
+        modelName = "Systran/faster-whisper-large-v3",
+        useCustomModel = false,
+        detectedEndpointUrl = "http://10.3.3.20:8000/v1/audio/transcriptions",
+        detectedFamily = ServerFamily.OPENAI_V1,
+        detectedForInput = "http://10.3.3.20:8000|false||false",
+      )
+
+    client.transcribe(WavEncoder.silentWav(100), base, { _, _ -> }, {})
+    assertEquals("whisper-1", transport.lastFields["model"])
+
+    client.transcribe(WavEncoder.silentWav(100), base.copy(useCustomModel = true), { _, _ -> }, {})
+    assertEquals("Systran/faster-whisper-large-v3", transport.lastFields["model"])
   }
 }

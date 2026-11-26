@@ -16,6 +16,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -63,6 +66,7 @@ import androidx.compose.ui.unit.sp
 import com.example.MainUiState
 import com.example.R
 import com.example.VoicePhase
+import com.example.handoff.InstalledTvApp
 import com.example.ui.components.TvListeningBars
 import com.example.ui.components.TvPrimaryButton
 import com.example.ui.components.TvSecondaryButton
@@ -70,7 +74,6 @@ import com.example.ui.theme.TvAmber
 import com.example.ui.theme.TvBackground
 import com.example.ui.theme.TvCoral
 import com.example.ui.theme.TvCyan
-import com.example.ui.theme.TvEmerald
 import com.example.ui.theme.TvOutline
 import com.example.ui.theme.TvSurface
 import com.example.ui.theme.TvSurfaceElevated
@@ -78,6 +81,7 @@ import com.example.ui.theme.TvSurfaceFocus
 import com.example.ui.theme.TvTextPrimary
 import com.example.ui.theme.TvTextSecondary
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SearchScreen(
   state: MainUiState,
@@ -86,6 +90,7 @@ fun SearchScreen(
   onRequestPermission: () -> Unit,
   onSearchTextChange: (String) -> Unit,
   onSubmitSearch: () -> Unit,
+  onSelectFallbackApp: (InstalledTvApp) -> Unit,
   onOpenSettings: () -> Unit,
   onDismiss: () -> Unit,
 ) {
@@ -109,171 +114,194 @@ fun SearchScreen(
         when (state.phase) {
           VoicePhase.LISTENING -> TvCoral.copy(alpha = 0.85f)
           VoicePhase.TRANSCRIBING, VoicePhase.OPENING_TARGET -> TvCyan.copy(alpha = 0.85f)
-          VoicePhase.ERROR, VoicePhase.PERMISSION_NEEDED -> TvAmber.copy(alpha = 0.7f)
+          VoicePhase.ERROR, VoicePhase.PERMISSION_NEEDED -> TvAmber.copy(alpha = 0.75f)
           VoicePhase.IDLE -> TvOutline
         },
-      animationSpec = tween(220),
+      animationSpec = tween(200),
       label = "barBorder",
     )
 
-  // Floating hover search overlay anchored cleanly in the upper area of the screen
+  val showErrorOrSetup =
+    !hasMicPermission ||
+      needsSetup ||
+      state.phase == VoicePhase.ERROR ||
+      state.phase == VoicePhase.PERMISSION_NEEDED
+  val showSubmitButton = state.searchText.isNotBlank() && state.phase != VoicePhase.LISTENING
+
+  // Lean floating pill search bar anchored cleanly near top-center
   BoxWithConstraints(
-    modifier =
-      Modifier.fillMaxSize().pointerInput(Unit) {
-        detectTapGestures { onDismiss() }
-      },
+    modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures { onDismiss() } },
     contentAlignment = Alignment.TopCenter,
   ) {
     val isCompact = maxWidth < 640.dp
-    val topInset = if (isCompact) 20.dp else 44.dp
-    val sideInset = if (isCompact) 14.dp else 40.dp
-    val barPadH = if (isCompact) 14.dp else 20.dp
-    val barPadV = if (isCompact) 14.dp else 16.dp
-    val micSize = if (isCompact) 58.dp else 64.dp
+    val topInset = if (isCompact) 18.dp else 40.dp
+    val sideInset = if (isCompact) 14.dp else 44.dp
+    val micSize = if (isCompact) 50.dp else 54.dp
 
     Column(
       modifier =
         Modifier.fillMaxWidth()
           .verticalScroll(rememberScrollState())
-          .padding(start = sideInset, end = sideInset, top = topInset, bottom = 24.dp),
+          .padding(start = sideInset, end = sideInset, top = topInset, bottom = 20.dp),
       horizontalAlignment = Alignment.CenterHorizontally,
+      verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
       Surface(
-        shape = RoundedCornerShape(28.dp),
+        shape = RoundedCornerShape(36.dp),
         color = TvSurface.copy(alpha = 0.96f),
         border = BorderStroke(1.5.dp, barBorderColor),
         shadowElevation = 18.dp,
         tonalElevation = 8.dp,
         modifier =
           Modifier.fillMaxWidth()
-            .widthIn(max = 880.dp)
-            .pointerInput(Unit) {
-              detectTapGestures {}
-            },
+            .widthIn(max = 780.dp)
+            .pointerInput(Unit) { detectTapGestures {} },
       ) {
-        Column(
-          modifier = Modifier.padding(horizontal = barPadH, vertical = barPadV),
-          verticalArrangement = Arrangement.spacedBy(12.dp),
+        Row(
+          modifier =
+            Modifier.fillMaxWidth()
+              .padding(horizontal = if (isCompact) 10.dp else 14.dp, vertical = 8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(if (isCompact) 8.dp else 12.dp),
         ) {
-          // Hover bar row: [ Mic Orb ] [ Search Input ] [ Discreet Settings Gear ]
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(if (isCompact) 10.dp else 14.dp),
+          MicOrbButton(
+            phase = state.phase,
+            audioLevel = state.audioLevel,
+            size = micSize,
+            onClick = { if (!hasMicPermission) onRequestPermission() else onMicClick() },
+            modifier = Modifier.focusRequester(micFocusRequester).testTag("mic_button"),
+          )
+
+          LeanSearchField(
+            value = state.searchText,
+            phase = state.phase,
+            audioLevel = state.audioLevel,
+            targetLabel = state.effectiveDisplayTargetLabel,
+            onValueChange = onSearchTextChange,
+            onSubmit = onSubmitSearch,
+            modifier = Modifier.weight(1f).testTag("search_input"),
+          )
+
+          DiscreetSettingsButton(
+            onClick = onOpenSettings,
+            highlight = needsSetup,
+            modifier = Modifier.focusRequester(settingsFocusRequester).testTag("settings_button"),
+          )
+        }
+      }
+
+      // Contextual strip below the pill ONLY for errors, setup, missing permission, or manual submit
+      AnimatedVisibility(visible = showErrorOrSetup || showSubmitButton) {
+        Surface(
+          shape = RoundedCornerShape(20.dp),
+          color = TvSurface.copy(alpha = 0.94f),
+          border =
+            BorderStroke(
+              1.dp,
+              if (showErrorOrSetup) TvAmber.copy(alpha = 0.5f) else TvOutline,
+            ),
+          modifier =
+            Modifier.fillMaxWidth()
+              .widthIn(max = 780.dp)
+              .pointerInput(Unit) { detectTapGestures {} },
+        ) {
+          Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
           ) {
-            MicOrbButton(
-              phase = state.phase,
-              audioLevel = state.audioLevel,
-              size = micSize,
-              onClick = { if (!hasMicPermission) onRequestPermission() else onMicClick() },
-              modifier = Modifier.focusRequester(micFocusRequester).testTag("mic_button"),
-            )
-
-            SearchQueryField(
-              value = state.searchText,
-              targetLabel = state.settings.targetLabel,
-              onValueChange = onSearchTextChange,
-              onSubmit = onSubmitSearch,
-              modifier = Modifier.weight(1f).testTag("search_input"),
-            )
-
-            DiscreetSettingsButton(
-              onClick = onOpenSettings,
-              highlight = needsSetup,
-              modifier =
-                Modifier.focusRequester(settingsFocusRequester).testTag("settings_button"),
-            )
-          }
-
-          // Compact assistant status strip & optional actions
-          val statusColor =
-            when (state.phase) {
-              VoicePhase.LISTENING -> TvCoral
-              VoicePhase.TRANSCRIBING, VoicePhase.OPENING_TARGET -> TvCyan
-              VoicePhase.ERROR, VoicePhase.PERMISSION_NEEDED -> TvAmber
-              VoicePhase.IDLE -> TvEmerald
-            }
-
-          Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-          ) {
-            Row(
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(10.dp),
-              modifier = Modifier.weight(1f),
-            ) {
-              when (state.phase) {
-                VoicePhase.LISTENING -> TvListeningBars(audioLevel = state.audioLevel)
-                VoicePhase.TRANSCRIBING, VoicePhase.OPENING_TARGET ->
-                  CircularProgressIndicator(
-                    color = TvCyan,
-                    strokeWidth = 2.5.dp,
-                    modifier = Modifier.size(18.dp),
-                  )
-                VoicePhase.ERROR, VoicePhase.PERMISSION_NEEDED ->
-                  Icon(
-                    imageVector = Icons.Rounded.Warning,
-                    contentDescription = null,
-                    tint = statusColor,
-                    modifier = Modifier.size(20.dp),
-                  )
-                VoicePhase.IDLE -> Unit
-              }
-
-              Text(
-                text =
-                  if (needsSetup) "Set your server in Settings to enable voice search"
-                  else state.statusMessage,
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 18.sp),
-                color = if (needsSetup) TvAmber else statusColor,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).testTag("status_text"),
-              )
-            }
-
-            if (!hasMicPermission) {
-              TvSecondaryButton(
-                onClick = onRequestPermission,
-                modifier = Modifier.testTag("grant_permission_button"),
-              ) {
-                Text("Grant Mic", style = MaterialTheme.typography.labelLarge, maxLines = 1)
-              }
-            } else if (state.searchText.isBlank() && !needsSetup && !isCompact) {
-              Text(
-                text = "${state.settings.targetLabel} · ${state.settings.language.label}",
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 18.sp),
-                color = TvTextSecondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-              )
-            }
-          }
-
-          AnimatedVisibility(visible = state.searchText.isNotBlank()) {
             Row(
               modifier = Modifier.fillMaxWidth(),
-              horizontalArrangement = Arrangement.End,
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-              TvPrimaryButton(
-                onClick = onSubmitSearch,
-                enabled = state.searchText.isNotBlank() && state.phase != VoicePhase.TRANSCRIBING,
-                modifier = Modifier.testTag("search_target_button"),
-              ) {
+              if (showErrorOrSetup) {
                 Icon(
-                  imageVector = Icons.Rounded.Search,
+                  imageVector = Icons.Rounded.Warning,
                   contentDescription = null,
-                  modifier = Modifier.size(22.dp),
+                  tint = TvAmber,
+                  modifier = Modifier.size(20.dp),
                 )
-                Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                  text = "Search in ${state.settings.targetLabel}",
-                  style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                  maxLines = 1,
+                  text =
+                    when {
+                      !hasMicPermission -> "Microphone permission required"
+                      needsSetup -> "Open Settings to set your transcription server"
+                      state.statusMessage.isNotBlank() -> state.statusMessage
+                      else -> "Check server settings"
+                    },
+                  style = MaterialTheme.typography.bodyMedium.copy(fontSize = 18.sp),
+                  color = TvAmber,
+                  maxLines = 2,
                   overflow = TextOverflow.Ellipsis,
+                  modifier = Modifier.weight(1f).testTag("status_text"),
                 )
+              } else {
+                Spacer(modifier = Modifier.weight(1f))
+              }
+
+              if (!hasMicPermission) {
+                TvSecondaryButton(
+                  onClick = onRequestPermission,
+                  contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                  modifier = Modifier.testTag("grant_permission_button"),
+                ) {
+                  Text("Grant Mic", style = MaterialTheme.typography.labelLarge, maxLines = 1)
+                }
+              }
+
+              if (showSubmitButton) {
+                TvPrimaryButton(
+                  onClick = onSubmitSearch,
+                  enabled = state.phase != VoicePhase.TRANSCRIBING,
+                  contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                  modifier = Modifier.testTag("search_target_button"),
+                ) {
+                  Icon(
+                    imageVector = Icons.Rounded.Search,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                  )
+                  Spacer(modifier = Modifier.width(6.dp))
+                  Text(
+                    text = "Search in ${state.effectiveDisplayTargetLabel}",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                }
+              }
+            }
+
+            if (state.showFallbackAppPicker && state.fallbackPickerApps.isNotEmpty()) {
+              Column(
+                modifier = Modifier.fillMaxWidth().testTag("fallback_picker_container"),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                Text(
+                  text = "Send query to another app:",
+                  style = MaterialTheme.typography.bodyMedium,
+                  color = TvTextSecondary,
+                )
+                FlowRow(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.spacedBy(8.dp),
+                  verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                  state.fallbackPickerApps.forEach { fallbackApp ->
+                    TvSecondaryButton(
+                      onClick = { onSelectFallbackApp(fallbackApp) },
+                      contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                      modifier = Modifier.testTag("fallback_app_${fallbackApp.packageName}"),
+                    ) {
+                      Text(
+                        text = fallbackApp.label,
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                      )
+                    }
+                  }
+                }
               }
             }
           }
@@ -284,8 +312,10 @@ fun SearchScreen(
 }
 
 @Composable
-private fun SearchQueryField(
+private fun LeanSearchField(
   value: String,
+  phase: VoicePhase,
+  audioLevel: Float,
   targetLabel: String,
   onValueChange: (String) -> Unit,
   onSubmit: () -> Unit,
@@ -293,6 +323,14 @@ private fun SearchQueryField(
 ) {
   val fieldInteraction = remember { MutableInteractionSource() }
   val fieldFocused by fieldInteraction.collectIsFocusedAsState()
+
+  val placeholderText =
+    when (phase) {
+      VoicePhase.LISTENING -> "Listening…"
+      VoicePhase.TRANSCRIBING -> "Transcribing…"
+      VoicePhase.OPENING_TARGET -> "Opening $targetLabel…"
+      else -> "Search $targetLabel…"
+    }
 
   OutlinedTextField(
     value = value,
@@ -306,22 +344,32 @@ private fun SearchQueryField(
       ),
     placeholder = {
       Text(
-        text = "Speak or search $targetLabel…",
+        text = placeholderText,
         style = MaterialTheme.typography.bodyLarge.copy(fontSize = 19.sp),
-        color = TvTextSecondary.copy(alpha = 0.72f),
+        color = if (phase == VoicePhase.LISTENING) TvCoral else TvTextSecondary.copy(alpha = 0.72f),
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
       )
     },
+    trailingIcon =
+      if (phase == VoicePhase.LISTENING) {
+        {
+          Box(modifier = Modifier.padding(end = 10.dp)) {
+            TvListeningBars(audioLevel = audioLevel)
+          }
+        }
+      } else {
+        null
+      },
     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
     keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
     shape = RoundedCornerShape(999.dp),
     colors =
       OutlinedTextFieldDefaults.colors(
-        focusedContainerColor = TvSurfaceFocus,
-        unfocusedContainerColor = TvSurfaceElevated.copy(alpha = 0.85f),
+        focusedContainerColor = TvSurfaceFocus.copy(alpha = 0.7f),
+        unfocusedContainerColor = Color.Transparent,
         focusedBorderColor = TvCyan,
-        unfocusedBorderColor = if (fieldFocused) TvCyan else TvOutline.copy(alpha = 0.65f),
+        unfocusedBorderColor = if (fieldFocused) TvCyan else Color.Transparent,
         cursorColor = TvCyan,
       ),
     modifier = modifier,
@@ -342,14 +390,14 @@ private fun DiscreetSettingsButton(
     when {
       isFocused -> Color.White
       highlight -> TvAmber
-      else -> TvOutline.copy(alpha = 0.6f)
+      else -> Color.Transparent
     }
 
   val bgColor =
     when {
       isFocused -> TvCyan
       highlight -> TvAmber.copy(alpha = 0.18f)
-      else -> TvSurfaceElevated.copy(alpha = 0.7f)
+      else -> TvSurfaceElevated.copy(alpha = 0.55f)
     }
 
   val iconTint =
@@ -364,15 +412,15 @@ private fun DiscreetSettingsButton(
     interactionSource = interactionSource,
     shape = CircleShape,
     color = bgColor,
-    border = BorderStroke(if (isFocused || highlight) 2.dp else 1.dp, borderColor),
-    modifier = modifier.size(50.dp).scale(scale),
+    border = if (borderColor != Color.Transparent) BorderStroke(2.dp, borderColor) else null,
+    modifier = modifier.size(48.dp).scale(scale),
   ) {
     Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
       Icon(
         imageVector = Icons.Rounded.Settings,
         contentDescription = "Settings",
         tint = iconTint,
-        modifier = Modifier.size(24.dp),
+        modifier = Modifier.size(22.dp),
       )
     }
   }
@@ -395,7 +443,7 @@ private fun MicOrbButton(
   val idlePulse by
     pulseTransition.animateFloat(
       initialValue = 1.0f,
-      targetValue = 1.08f,
+      targetValue = 1.07f,
       animationSpec = infiniteRepeatable(animation = tween(680), repeatMode = RepeatMode.Reverse),
       label = "pulseVal",
     )
@@ -442,14 +490,14 @@ private fun MicOrbButton(
         CircularProgressIndicator(
           color = TvCyan,
           strokeWidth = 3.dp,
-          modifier = Modifier.size(28.dp),
+          modifier = Modifier.size(24.dp),
         )
       } else {
         Icon(
           painter = painterResource(id = R.drawable.ic_mic),
           contentDescription = if (isListening) "Stop listening" else "Start voice search",
           tint = if (isListening || isFocused) TvBackground else TvTextPrimary,
-          modifier = Modifier.size(30.dp),
+          modifier = Modifier.size(26.dp),
         )
       }
     }

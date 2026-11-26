@@ -37,11 +37,17 @@ class AssistSession(context: Context) : VoiceInteractionSession(context) {
       AssistAudioBridge.offerStream(null)
     }
 
+    val sourcePackage = args?.getString(MainActivity.EXTRA_SOURCE_PACKAGE)
+    Log.i(TAG, "AssistSession.onShow source_package=${sourcePackage ?: "(home/none)"}")
+
     val intent =
       Intent(context, MainActivity::class.java).apply {
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         putExtra(MainActivity.EXTRA_FROM_ASSIST, true)
         putExtra(MainActivity.EXTRA_HAS_REMOTE_STREAM, foundAudioPfd != null)
+        if (!sourcePackage.isNullOrBlank()) {
+          putExtra(MainActivity.EXTRA_SOURCE_PACKAGE, sourcePackage)
+        }
       }
     context.startActivity(intent)
     finish()

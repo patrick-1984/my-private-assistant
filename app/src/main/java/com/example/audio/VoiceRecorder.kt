@@ -8,6 +8,7 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import com.example.data.MicSource
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -65,6 +66,7 @@ class VoiceRecorder(private val context: Context) {
     remoteStreamPfd: ParcelFileDescriptor? = null,
     onSpeechStart: (() -> Unit)? = null,
     onRmsChanged: ((Float) -> Unit)? = null,
+    onAudioChunk: ((ByteArray) -> Unit)? = null,
   ): RecordingOutcome =
     withContext(Dispatchers.IO) {
       stopRequested = false
@@ -72,7 +74,8 @@ class VoiceRecorder(private val context: Context) {
       _speechStarted.value = false
 
       if (micSource != MicSource.BUILTIN_MIC && remoteStreamPfd != null) {
-        val streamResult = tryReadRemoteStream(remoteStreamPfd, onSpeechStart, onRmsChanged)
+        val streamResult =
+          tryReadRemoteStream(remoteStreamPfd, onSpeechStart, onRmsChanged, onAudioChunk)
         if (streamResult != null) {
           _level.value = 0f
           return@withContext streamResult
@@ -85,7 +88,7 @@ class VoiceRecorder(private val context: Context) {
         // Fallback to AudioRecord if no remote stream was delivered by the system
       }
 
-      val result = recordFromAudioRecord(micSource, onSpeechStart, onRmsChanged)
+      val result = recordFromAudioRecord(micSource, onSpeechStart, onRmsChanged, onAudioChunk)
       _level.value = 0f
       result
     }
@@ -94,7 +97,9 @@ class VoiceRecorder(private val context: Context) {
     pfd: ParcelFileDescriptor,
     onSpeechStart: (() -> Unit)?,
     onRmsChanged: ((Float) -> Unit)?,
+    onAudioChunk: ((ByteArray) -> Unit)?,
   ): RecordingOutcome? {
+    Log.i(TAG, "Audio source: REMOTE_STREAM (AssistSession ParcelFileDescriptor)")
     return try {
       ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input ->
         readStreamWithSilenceDetection(
@@ -102,6 +107,7 @@ class VoiceRecorder(private val context: Context) {
           usedRemoteStream = true,
           onSpeechStart = onSpeechStart,
           onRmsChanged = onRmsChanged,
+          onAudioChunk = onAudioChunk,
         )
       }
     } catch (_: Exception) {
@@ -114,12 +120,15 @@ class VoiceRecorder(private val context: Context) {
     usedRemoteStream: Boolean,
     onSpeechStart: (() -> Unit)?,
     onRmsChanged: ((Float) -> Unit)?,
+    onAudioChunk: ((ByteArray) -> Unit)?,
   ): RecordingOutcome {
     val pcmOut = ByteArrayOutputStream()
     val buffer = ByteArray(FRAME_BYTES)
     val startMs = System.currentTimeMillis()
     var hasSpeechStarted = false
     var silenceStartMs = 0L
+    var lastChunkAtMs = startMs
+    var lastChunkBytes = 0
 
     while (currentCoroutineContext().isActive && !stopRequested) {
       val now = System.currentTimeMillis()
@@ -148,6 +157,17 @@ class VoiceRecorder(private val context: Context) {
           break
         }
       }
+
+      if (
+        onAudioChunk != null &&
+          hasSpeechStarted &&
+          now - lastChunkAtMs >= LIVE_CHUNK_INTERVAL_MS &&
+          pcmOut.size() - lastChunkBytes >= LIVE_MIN_DELTA_BYTES
+      ) {
+        lastChunkAtMs = now
+        lastChunkBytes = pcmOut.size()
+        onAudioChunk.invoke(WavEncoder.encodePcm16(pcmOut.toByteArray()))
+      }
     }
 
     val pcm = pcmOut.toByteArray()
@@ -162,6 +182,7 @@ class VoiceRecorder(private val context: Context) {
     micSource: MicSource,
     onSpeechStart: (() -> Unit)?,
     onRmsChanged: ((Float) -> Unit)?,
+    onAudioChunk: ((ByteArray) -> Unit)?,
   ): RecordingOutcome {
     val minBuf =
       AudioRecord.getMinBufferSize(
@@ -174,11 +195,16 @@ class VoiceRecorder(private val context: Context) {
     }
     val bufferSize = maxOf(minBuf * 2, FRAME_BYTES * 4)
 
+    var chosenSourceName = "VOICE_RECOGNITION"
     val recorder =
       createAudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, bufferSize)
-        ?: createAudioRecord(MediaRecorder.AudioSource.MIC, bufferSize)
+        ?: run {
+          chosenSourceName = "MIC"
+          createAudioRecord(MediaRecorder.AudioSource.MIC, bufferSize)
+        }
         ?: return RecordingOutcome.Error("Unable to open microphone.")
 
+    var preferredDeviceLabel = "system_default"
     if (micSource == MicSource.BUILTIN_MIC) {
       val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
       val builtin =
@@ -187,8 +213,13 @@ class VoiceRecorder(private val context: Context) {
         }
       if (builtin != null) {
         recorder.setPreferredDevice(builtin)
+        preferredDeviceLabel = "TYPE_BUILTIN_MIC"
       }
     }
+    Log.i(
+      TAG,
+      "Audio source: AudioRecord.$chosenSourceName (micSetting=${micSource.name}, device=$preferredDeviceLabel)",
+    )
 
     val pcmOut = ByteArrayOutputStream()
     val buffer = ByteArray(FRAME_BYTES)
@@ -202,6 +233,8 @@ class VoiceRecorder(private val context: Context) {
       val startMs = System.currentTimeMillis()
       var hasSpeechStarted = false
       var silenceStartMs = 0L
+      var lastChunkAtMs = startMs
+      var lastChunkBytes = 0
 
       while (currentCoroutineContext().isActive && !stopRequested) {
         val now = System.currentTimeMillis()
@@ -232,6 +265,17 @@ class VoiceRecorder(private val context: Context) {
           } else if (now - silenceStartMs >= SILENCE_DURATION_MS) {
             break
           }
+        }
+
+        if (
+          onAudioChunk != null &&
+            hasSpeechStarted &&
+            now - lastChunkAtMs >= LIVE_CHUNK_INTERVAL_MS &&
+            pcmOut.size() - lastChunkBytes >= LIVE_MIN_DELTA_BYTES
+        ) {
+          lastChunkAtMs = now
+          lastChunkBytes = pcmOut.size()
+          onAudioChunk.invoke(WavEncoder.encodePcm16(pcmOut.toByteArray()))
         }
       }
 
@@ -289,8 +333,11 @@ class VoiceRecorder(private val context: Context) {
   }
 
   companion object {
+    private const val TAG = "TVVoiceRecorder"
     private const val FRAME_BYTES = 1024 // ~32ms at 16kHz 16-bit mono
     private const val SPEECH_RMS_THRESHOLD = 420f
+    private const val LIVE_CHUNK_INTERVAL_MS = 1100L
+    private const val LIVE_MIN_DELTA_BYTES = 16000 // ~0.5s new 16kHz mono PCM
     const val SILENCE_DURATION_MS = 1200L
     const val MAX_DURATION_MS = 10000L
   }

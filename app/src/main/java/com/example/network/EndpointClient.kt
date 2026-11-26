@@ -39,8 +39,12 @@ import org.json.JSONObject
 data class EndpointCandidate(val url: String, val family: ServerFamily)
 
 sealed class ProbeResult {
-  data class Success(val url: String, val family: ServerFamily, val message: String) :
-    ProbeResult()
+  data class Success(
+    val url: String,
+    val family: ServerFamily,
+    val message: String,
+    val availableModels: List<String> = emptyList(),
+  ) : ProbeResult()
 
   data class NeedsApiKey(val url: String, val family: ServerFamily, val message: String) :
     ProbeResult()
@@ -75,6 +79,16 @@ interface HttpTransport {
     tlsServerName: String? = null,
     ignoreSsl: Boolean = false,
   ): HttpResponseData
+
+  @Throws(IOException::class)
+  fun getJson(
+    urlString: String,
+    headers: Map<String, String>,
+    connectTimeoutMs: Int,
+    readTimeoutMs: Int,
+    tlsServerName: String? = null,
+    ignoreSsl: Boolean = false,
+  ): HttpResponseData = HttpResponseData(404, "")
 }
 
 object UrlConnectionTransport : HttpTransport {
@@ -145,10 +159,15 @@ object UrlConnectionTransport : HttpTransport {
     // Socket / SSLSocket HTTP/1.1 connection so Android's HttpURLConnection/OkHttp layer cannot
     // overwrite TLS SNI with the IP literal (which causes TLSV1_ALERT_UNRECOGNIZED_NAME).
     if (!tlsServerName.isNullOrBlank() || headers.containsKey("Host")) {
-      return postDirectHttp11(
+      val requestHeaders =
+        linkedMapOf<String, String>().apply {
+          put("Content-Type", "multipart/form-data; boundary=$boundary")
+          putAll(headers)
+        }
+      return sendDirectHttp11(
+        method = "POST",
         urlString = urlString,
-        headers = headers,
-        boundary = boundary,
+        headers = requestHeaders,
         payload = payload,
         connectTimeoutMs = connectTimeoutMs,
         readTimeoutMs = readTimeoutMs,
@@ -196,11 +215,63 @@ object UrlConnectionTransport : HttpTransport {
     }
   }
 
-  private fun postDirectHttp11(
+  override fun getJson(
     urlString: String,
     headers: Map<String, String>,
-    boundary: String,
-    payload: ByteArray,
+    connectTimeoutMs: Int,
+    readTimeoutMs: Int,
+    tlsServerName: String?,
+    ignoreSsl: Boolean,
+  ): HttpResponseData {
+    if (!tlsServerName.isNullOrBlank() || headers.containsKey("Host")) {
+      return sendDirectHttp11(
+        method = "GET",
+        urlString = urlString,
+        headers = headers,
+        payload = null,
+        connectTimeoutMs = connectTimeoutMs,
+        readTimeoutMs = readTimeoutMs,
+        tlsServerName = tlsServerName,
+        ignoreSsl = ignoreSsl,
+      )
+    }
+
+    val conn = (URL(urlString).openConnection() as HttpURLConnection)
+    try {
+      if (conn is HttpsURLConnection && ignoreSsl) {
+        conn.sslSocketFactory = trustAllSslSocketFactory()
+        conn.hostnameVerifier = HostnameVerifier { _, _ -> true }
+      }
+
+      conn.requestMethod = "GET"
+      conn.connectTimeout = connectTimeoutMs
+      conn.readTimeout = readTimeoutMs
+      conn.doInput = true
+      conn.useCaches = false
+      conn.setRequestProperty("Accept", "application/json, text/plain;q=0.9")
+      for ((k, v) in headers) {
+        conn.setRequestProperty(k, v)
+      }
+
+      val status = conn.responseCode
+      val stream = if (status in 200..299) conn.inputStream else conn.errorStream
+      val responseText =
+        if (stream != null) {
+          BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
+        } else {
+          ""
+        }
+      return HttpResponseData(status, responseText)
+    } finally {
+      conn.disconnect()
+    }
+  }
+
+  private fun sendDirectHttp11(
+    method: String,
+    urlString: String,
+    headers: Map<String, String>,
+    payload: ByteArray?,
     connectTimeoutMs: Int,
     readTimeoutMs: Int,
     tlsServerName: String?,
@@ -256,13 +327,14 @@ object UrlConnectionTransport : HttpTransport {
 
       val out = activeSocket.getOutputStream()
       val headerText = buildString {
-        append("POST $requestTarget HTTP/1.1\r\n")
+        append("$method $requestTarget HTTP/1.1\r\n")
         append("Host: $hostHeader\r\n")
         append("User-Agent: TVVoiceSearch/1.0\r\n")
         append("Accept: application/json, text/plain;q=0.9\r\n")
         append("Accept-Encoding: identity\r\n")
-        append("Content-Type: multipart/form-data; boundary=$boundary\r\n")
-        append("Content-Length: ${payload.size}\r\n")
+        if (payload != null) {
+          append("Content-Length: ${payload.size}\r\n")
+        }
         for ((k, v) in headers) {
           if (!k.equals("Host", ignoreCase = true)) {
             append("$k: $v\r\n")
@@ -271,7 +343,9 @@ object UrlConnectionTransport : HttpTransport {
         append("Connection: close\r\n\r\n")
       }
       out.write(headerText.toByteArray(Charsets.US_ASCII))
-      out.write(payload)
+      if (payload != null) {
+        out.write(payload)
+      }
       out.flush()
 
       return readHttp11Response(BufferedInputStream(activeSocket.getInputStream()))
@@ -573,7 +647,14 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           ignoreSsl = ignoreSsl,
         )
       if (primaryOutcome.result != null) {
-        return@withContext primaryOutcome.result
+        val enriched =
+          enrichSuccessWithModels(
+            result = primaryOutcome.result,
+            apiKey = apiKey,
+            validatedOverrideIp = validatedIp,
+            ignoreSsl = ignoreSsl,
+          )
+        return@withContext enriched
       }
 
       if (primaryOutcome.hadConnectionError && normalized.fallbackHttpsBase != null) {
@@ -589,7 +670,14 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
             ignoreSsl = ignoreSsl,
           )
         if (httpsOutcome.result != null) {
-          return@withContext httpsOutcome.result
+          val enriched =
+            enrichSuccessWithModels(
+              result = httpsOutcome.result,
+              apiKey = apiKey,
+              validatedOverrideIp = validatedIp,
+              ignoreSsl = ignoreSsl,
+            )
+          return@withContext enriched
         }
         return@withContext ProbeResult.Failure(
           httpsOutcome.lastError ?: primaryOutcome.lastError ?: "Could not connect to server."
@@ -600,6 +688,114 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
         primaryOutcome.lastError ?: "No transcription endpoint found at ${normalized.primaryBase}."
       )
     }
+
+  private fun enrichSuccessWithModels(
+    result: ProbeResult,
+    apiKey: String,
+    validatedOverrideIp: String?,
+    ignoreSsl: Boolean,
+  ): ProbeResult {
+    if (result !is ProbeResult.Success) return result
+    val models = fetchModelsForEndpoint(result.url, apiKey, validatedOverrideIp, ignoreSsl)
+    return result.copy(availableModels = models)
+  }
+
+  suspend fun fetchModels(
+    detectedUrl: String,
+    rawInput: String,
+    apiKey: String,
+    useIpOverride: Boolean,
+    overrideIp: String,
+    ignoreSsl: Boolean,
+  ): List<String> =
+    withContext(Dispatchers.IO) {
+      val validatedIp = if (useIpOverride) validateNumericIp(overrideIp) else null
+      val baseUrl =
+        detectedUrl.ifBlank {
+          normalizeInput(rawInput)?.let { "${it.primaryBase}${it.path}" }.orEmpty()
+        }
+      if (baseUrl.isBlank()) return@withContext emptyList()
+      fetchModelsForEndpoint(baseUrl, apiKey, validatedIp, ignoreSsl)
+    }
+
+  internal fun fetchModelsForEndpoint(
+    endpointUrl: String,
+    apiKey: String,
+    validatedOverrideIp: String?,
+    ignoreSsl: Boolean,
+  ): List<String> {
+    val modelUrls = buildOpenAiModelUrls(endpointUrl)
+    for (url in modelUrls) {
+      try {
+        val target = resolveTarget(url, validatedOverrideIp)
+        val headers = buildMap {
+          target.hostHeader?.let { put("Host", it) }
+          if (apiKey.isNotBlank()) {
+            put("Authorization", "Bearer ${apiKey.trim()}")
+          }
+        }
+        val response =
+          transport.getJson(
+            urlString = target.connectUrl,
+            headers = headers,
+            connectTimeoutMs = PROBE_TIMEOUT_MS,
+            readTimeoutMs = PROBE_TIMEOUT_MS,
+            tlsServerName = target.tlsServerName,
+            ignoreSsl = ignoreSsl,
+          )
+        if (response.statusCode == 200) {
+          val parsed = parseOpenAiModelsJson(response.body)
+          if (parsed.isNotEmpty()) return parsed
+        }
+      } catch (_: Exception) {
+        // Ignore model discovery failure; endpoint transcription still works
+      }
+    }
+    return emptyList()
+  }
+
+  internal fun buildOpenAiModelUrls(endpointUrl: String): List<String> {
+    return try {
+      val uri = URI(endpointUrl)
+      val portPart = if (uri.port != -1) ":${uri.port}" else ""
+      val origin = "${uri.scheme}://${uri.host}$portPart"
+      val rawPath = (uri.rawPath ?: "").trimEnd('/')
+      val v1Idx = rawPath.indexOf("/v1")
+      val urls = linkedSetOf<String>()
+      if (v1Idx >= 0) {
+        val prefix = rawPath.substring(0, v1Idx)
+        urls.add("$origin$prefix/v1/models")
+      }
+      val audioIdx = rawPath.indexOf("/audio/transcriptions")
+      if (audioIdx > 0 && v1Idx < 0) {
+        val prefix = rawPath.substring(0, audioIdx)
+        urls.add("$origin$prefix/models")
+      }
+      urls.add("$origin/v1/models")
+      urls.add("$origin/models")
+      urls.toList()
+    } catch (_: Exception) {
+      emptyList()
+    }
+  }
+
+  internal fun parseOpenAiModelsJson(body: String): List<String> {
+    val trimmed = body.trim()
+    if (!trimmed.startsWith("{")) return emptyList()
+    return try {
+      val json = JSONObject(trimmed)
+      val arr = json.optJSONArray("data") ?: return emptyList()
+      val ids = linkedSetOf<String>()
+      for (i in 0 until arr.length()) {
+        val item = arr.optJSONObject(i) ?: continue
+        val id = item.optString("id", "").trim()
+        if (id.isNotEmpty()) ids.add(id)
+      }
+      ids.toList()
+    } catch (_: Exception) {
+      emptyList()
+    }
+  }
 
   private data class ProbeBatchOutcome(
     val result: ProbeResult?,
@@ -728,7 +924,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
             detectEndpoint(
               rawInput = settings.endpointInput,
               apiKey = settings.effectiveApiKey,
-              modelName = settings.modelName,
+              modelName = settings.effectiveModelName,
               language = settings.language,
               useIpOverride = settings.useIpOverride,
               overrideIp = settings.overrideIp,
@@ -760,7 +956,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           family = targetFamily,
           wavBytes = wavBytes,
           apiKey = settings.effectiveApiKey,
-          modelName = settings.modelName,
+          modelName = settings.effectiveModelName,
           language = settings.language,
           validatedOverrideIp = validatedIp,
           ignoreSsl = settings.ignoreSsl,
@@ -774,7 +970,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
             detectEndpoint(
               rawInput = settings.endpointInput,
               apiKey = settings.effectiveApiKey,
-              modelName = settings.modelName,
+              modelName = settings.effectiveModelName,
               language = settings.language,
               useIpOverride = settings.useIpOverride,
               overrideIp = settings.overrideIp,
@@ -790,7 +986,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
                   family = reProbe.family,
                   wavBytes = wavBytes,
                   apiKey = settings.effectiveApiKey,
-                  modelName = settings.modelName,
+                  modelName = settings.effectiveModelName,
                   language = settings.language,
                   validatedOverrideIp = validatedIp,
                   ignoreSsl = settings.ignoreSsl,

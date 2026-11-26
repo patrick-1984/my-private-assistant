@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">TV Voice Search</string>
+    <string name="mic_key_service_description">Opens TV Voice Search when you press the remote\'s mic button</string>
 </resources>

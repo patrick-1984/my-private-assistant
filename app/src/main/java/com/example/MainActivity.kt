@@ -35,6 +35,8 @@ class MainActivity : ComponentActivity() {
     enableEdgeToEdge()
 
     val launchedFromAssist = isAssistIntent(intent)
+    val launchSourcePackage =
+      if (launchedFromAssist) intent?.getStringExtra(EXTRA_SOURCE_PACKAGE) else null
 
     setContent {
       TvVoiceSearchTheme {
@@ -44,19 +46,26 @@ class MainActivity : ComponentActivity() {
         val permissionLauncher =
           rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             hasMicPermission = granted
-            viewModel.onPermissionChecked(granted, forceStart = granted)
+            viewModel.onPermissionChecked(
+              granted = granted,
+              forceStart = granted,
+              sourcePackage = launchSourcePackage,
+            )
           }
 
         LaunchedEffect(Unit) {
           hasMicPermission = checkMicPermission()
           if (hasMicPermission) {
             if (launchedFromAssist) {
-              viewModel.onAssistLaunch()
+              viewModel.onAssistLaunch(launchSourcePackage)
             } else {
-              viewModel.onPermissionChecked(granted = true)
+              viewModel.onPermissionChecked(
+                granted = true,
+                sourcePackage = launchSourcePackage,
+              )
             }
           } else {
-            viewModel.onPermissionChecked(granted = false)
+            viewModel.onPermissionChecked(granted = false, sourcePackage = launchSourcePackage)
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
           }
         }
@@ -87,11 +96,20 @@ class MainActivity : ComponentActivity() {
               onToggleIgnoreSsl = { viewModel.setIgnoreSsl(it) },
               onToggleApiKey = { viewModel.setUseApiKey(it) },
               onTestEndpoint = { viewModel.testEndpoint() },
+              onToggleCustomModel = { viewModel.setUseCustomModel(it) },
+              onRefreshModels = { viewModel.refreshAvailableModels() },
+              onToggleLiveTranscription = { viewModel.setLiveTranscription(it) },
+              onToggleSearchInCurrentApp = { viewModel.setSearchInCurrentApp(it) },
               onSelectTargetApp = { viewModel.selectTargetApp(it) },
+              onTestAppSearch = { viewModel.testAppSearch(it) },
+              onConfirmAppTest = { viewModel.confirmAppTestResult(it) },
+              onDismissPendingVerification = { viewModel.dismissPendingVerification() },
+              onToggleNeverUseApp = { viewModel.toggleNeverUseApp(it) },
               onSelectLanguage = { viewModel.setLanguage(it) },
               onApiKeyChange = { viewModel.setApiKey(it) },
               onModelNameChange = { viewModel.setModelName(it) },
               onSelectMicSource = { viewModel.setMicSource(it) },
+              onToggleMicCapture = { viewModel.setMicButtonCapture(it) },
               onRefreshAssistantStatus = { viewModel.refreshAssistantStatus() },
               onCopyAdbCommand = { label, cmd -> viewModel.copyToClipboard(label, cmd) },
             )
@@ -103,6 +121,7 @@ class MainActivity : ComponentActivity() {
               onRequestPermission = { permissionLauncher.launch(Manifest.permission.RECORD_AUDIO) },
               onSearchTextChange = { viewModel.updateSearchText(it) },
               onSubmitSearch = { viewModel.submitManualSearch() },
+              onSelectFallbackApp = { viewModel.launchFallbackApp(it) },
               onOpenSettings = { viewModel.openSettings() },
               onDismiss = { finish() },
             )
@@ -116,14 +135,15 @@ class MainActivity : ComponentActivity() {
     super.onNewIntent(intent)
     setIntent(intent)
     if (isAssistIntent(intent) && checkMicPermission()) {
-      viewModel.onAssistLaunch()
+      viewModel.onAssistLaunch(intent.getStringExtra(EXTRA_SOURCE_PACKAGE))
     }
   }
 
   private fun isAssistIntent(intent: Intent?): Boolean {
     if (intent == null) return false
     return intent.action == Intent.ACTION_ASSIST ||
-      intent.getBooleanExtra(EXTRA_FROM_ASSIST, false)
+      intent.getBooleanExtra(EXTRA_FROM_ASSIST, false) ||
+      intent.getBooleanExtra(EXTRA_START_LISTENING, false)
   }
 
   private fun checkMicPermission(): Boolean {
@@ -134,5 +154,7 @@ class MainActivity : ComponentActivity() {
   companion object {
     const val EXTRA_FROM_ASSIST = "extra_from_assist"
     const val EXTRA_HAS_REMOTE_STREAM = "extra_has_remote_stream"
+    const val EXTRA_START_LISTENING = "start_listening"
+    const val EXTRA_SOURCE_PACKAGE = "source_package"
   }
 }

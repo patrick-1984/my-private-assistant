@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONObject
 
 enum class LanguageOption(val code: String?, val label: String) {
   AUTO(null, "Auto"),
@@ -25,12 +26,22 @@ enum class ServerFamily(val label: String) {
   WHISPER_ASR("whisper-asr-webservice"),
 }
 
+enum class AppHandoffStatus(val label: String) {
+  UNKNOWN("Unknown"),
+  CONFIRMED("Confirmed"),
+  NOT_WORKING("Not working"),
+}
+
 data class AppSettings(
   val endpointInput: String = "",
   val useIpOverride: Boolean = false,
   val overrideIp: String = "",
   val ignoreSsl: Boolean = false,
   val useApiKey: Boolean = false,
+  val useCustomModel: Boolean = false,
+  val liveTranscription: Boolean = false,
+  val micButtonCapture: Boolean = true,
+  val searchInCurrentApp: Boolean = true,
   val detectedEndpointUrl: String = "",
   val detectedFamily: ServerFamily? = null,
   val detectedForInput: String = "",
@@ -41,12 +52,20 @@ data class AppSettings(
   val modelName: String = DEFAULT_MODEL_NAME,
   val micSource: MicSource = MicSource.AUTO,
   val lastAssistArgsLog: String = "",
+  val appHandoffStatuses: Map<String, AppHandoffStatus> = emptyMap(),
 ) {
+  fun handoffStatusFor(packageName: String): AppHandoffStatus {
+    return appHandoffStatuses[packageName] ?: AppHandoffStatus.UNKNOWN
+  }
+
   val cacheKey: String
     get() = "${endpointInput.trim()}|$useIpOverride|${overrideIp.trim()}|$ignoreSsl"
 
   val effectiveApiKey: String
     get() = if (useApiKey) apiKey.trim() else ""
+
+  val effectiveModelName: String
+    get() = if (useCustomModel && modelName.isNotBlank()) modelName.trim() else DEFAULT_MODEL_NAME
 
   val hasValidCachedEndpoint: Boolean
     get() =
@@ -88,6 +107,13 @@ class SettingsRepository private constructor(context: Context) {
     val useApiKey =
       if (prefs.contains(KEY_USE_API_KEY)) prefs.getBoolean(KEY_USE_API_KEY, false)
       else savedApiKey.isNotBlank()
+    val savedModel =
+      prefs.getString(KEY_MODEL_NAME, AppSettings.DEFAULT_MODEL_NAME)?.ifBlank {
+        AppSettings.DEFAULT_MODEL_NAME
+      } ?: AppSettings.DEFAULT_MODEL_NAME
+    val useCustomModel =
+      if (prefs.contains(KEY_USE_CUSTOM_MODEL)) prefs.getBoolean(KEY_USE_CUSTOM_MODEL, false)
+      else savedModel != AppSettings.DEFAULT_MODEL_NAME
 
     return AppSettings(
       endpointInput = prefs.getString(KEY_ENDPOINT_INPUT, "") ?: "",
@@ -95,6 +121,10 @@ class SettingsRepository private constructor(context: Context) {
       overrideIp = prefs.getString(KEY_OVERRIDE_IP, "") ?: "",
       ignoreSsl = prefs.getBoolean(KEY_IGNORE_SSL, false),
       useApiKey = useApiKey,
+      useCustomModel = useCustomModel,
+      liveTranscription = prefs.getBoolean(KEY_LIVE_TRANSCRIPTION, false),
+      micButtonCapture = prefs.getBoolean(KEY_MIC_BUTTON_CAPTURE, true),
+      searchInCurrentApp = prefs.getBoolean(KEY_SEARCH_IN_CURRENT_APP, true),
       detectedEndpointUrl = prefs.getString(KEY_DETECTED_URL, "") ?: "",
       detectedFamily = family,
       detectedForInput = prefs.getString(KEY_DETECTED_FOR_INPUT, "") ?: "",
@@ -106,13 +136,31 @@ class SettingsRepository private constructor(context: Context) {
           ?: AppSettings.DEFAULT_TARGET_LABEL,
       language = language,
       apiKey = savedApiKey,
-      modelName =
-        prefs.getString(KEY_MODEL_NAME, AppSettings.DEFAULT_MODEL_NAME)?.ifBlank {
-          AppSettings.DEFAULT_MODEL_NAME
-        } ?: AppSettings.DEFAULT_MODEL_NAME,
+      modelName = savedModel,
       micSource = micSource,
       lastAssistArgsLog = prefs.getString(KEY_LAST_ASSIST_ARGS, "") ?: "",
+      appHandoffStatuses = decodeStatuses(prefs.getString(KEY_APP_HANDOFF_STATUSES, null)),
     )
+  }
+
+  private fun decodeStatuses(rawJson: String?): Map<String, AppHandoffStatus> {
+    if (rawJson.isNullOrBlank()) return emptyMap()
+    return try {
+      val json = JSONObject(rawJson)
+      buildMap {
+        for (key in json.keys()) {
+          val valueName = json.optString(key, AppHandoffStatus.UNKNOWN.name)
+          val parsed =
+            AppHandoffStatus.entries.firstOrNull { it.name == valueName }
+              ?: AppHandoffStatus.UNKNOWN
+          if (parsed != AppHandoffStatus.UNKNOWN) {
+            put(key, parsed)
+          }
+        }
+      }
+    } catch (_: Exception) {
+      emptyMap()
+    }
   }
 
   fun updateEndpointInput(input: String) {
@@ -186,6 +234,41 @@ class SettingsRepository private constructor(context: Context) {
     _settings.value = readFromPrefs()
   }
 
+  fun setUseCustomModel(enabled: Boolean) {
+    prefs.edit().putBoolean(KEY_USE_CUSTOM_MODEL, enabled).apply()
+    _settings.value = readFromPrefs()
+  }
+
+  fun setLiveTranscription(enabled: Boolean) {
+    prefs.edit().putBoolean(KEY_LIVE_TRANSCRIPTION, enabled).apply()
+    _settings.value = readFromPrefs()
+  }
+
+  fun setMicButtonCapture(enabled: Boolean) {
+    prefs.edit().putBoolean(KEY_MIC_BUTTON_CAPTURE, enabled).apply()
+    _settings.value = readFromPrefs()
+  }
+
+  fun setSearchInCurrentApp(enabled: Boolean) {
+    prefs.edit().putBoolean(KEY_SEARCH_IN_CURRENT_APP, enabled).apply()
+    _settings.value = readFromPrefs()
+  }
+
+  fun setAppHandoffStatus(packageName: String, status: AppHandoffStatus) {
+    val updated = _settings.value.appHandoffStatuses.toMutableMap()
+    if (status == AppHandoffStatus.UNKNOWN) {
+      updated.remove(packageName)
+    } else {
+      updated[packageName] = status
+    }
+    val json = JSONObject()
+    for ((pkg, st) in updated) {
+      json.put(pkg, st.name)
+    }
+    prefs.edit().putString(KEY_APP_HANDOFF_STATUSES, json.toString()).apply()
+    _settings.value = readFromPrefs()
+  }
+
   fun saveDetectedEndpoint(cacheKey: String, fullUrl: String, family: ServerFamily) {
     prefs.edit().apply {
       putString(KEY_DETECTED_URL, fullUrl)
@@ -248,6 +331,11 @@ class SettingsRepository private constructor(context: Context) {
     private const val KEY_OVERRIDE_IP = "override_ip"
     private const val KEY_IGNORE_SSL = "ignore_ssl"
     private const val KEY_USE_API_KEY = "use_api_key"
+    private const val KEY_USE_CUSTOM_MODEL = "use_custom_model"
+    private const val KEY_LIVE_TRANSCRIPTION = "live_transcription"
+    private const val KEY_MIC_BUTTON_CAPTURE = "mic_button_capture"
+    private const val KEY_SEARCH_IN_CURRENT_APP = "search_in_current_app"
+    private const val KEY_APP_HANDOFF_STATUSES = "app_handoff_statuses"
     private const val KEY_DETECTED_URL = "detected_url"
     private const val KEY_DETECTED_FAMILY = "detected_family"
     private const val KEY_DETECTED_FOR_INPUT = "detected_for_input"

@@ -12,6 +12,8 @@ import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Build
+import android.util.Log
+import com.example.data.AppHandoffStatus
 import java.net.URLEncoder
 
 enum class HandoffMethod(val label: String) {
@@ -21,7 +23,11 @@ enum class HandoffMethod(val label: String) {
   ACTION_WEB_SEARCH("Web search intent"),
   ACTION_SEND("Share text"),
   CLIPBOARD_LAUNCH("Clipboard + launch"),
-  NOT_SUPPORTED("Not supported"),
+  NOT_SUPPORTED("Not supported");
+
+  fun isDirectSearchMethod(): Boolean {
+    return this != NOT_SUPPORTED && this != CLIPBOARD_LAUNCH
+  }
 }
 
 data class InstalledTvApp(
@@ -32,13 +38,24 @@ data class InstalledTvApp(
 )
 
 sealed class HandoffResult {
-  data class Launched(val method: HandoffMethod, val copiedToClipboard: Boolean = false) :
-    HandoffResult()
+  data class Launched(
+    val packageName: String,
+    val appLabel: String,
+    val method: HandoffMethod,
+    val usedCurrentApp: Boolean,
+    val copiedToClipboard: Boolean = false,
+  ) : HandoffResult()
 
-  data class Failed(val message: String) : HandoffResult()
+  data class Failed(
+    val targetPackage: String,
+    val targetLabel: String,
+    val message: String,
+  ) : HandoffResult()
 }
 
 object AppHandoff {
+
+  private const val TAG = "TVVoiceAssist"
 
   const val PKG_SMARTTUBE = "org.smarttube.stable"
   const val PKG_NEWPIPE = "org.schabi.newpipe"
@@ -96,7 +113,11 @@ object AppHandoff {
     return HandoffMethod.NOT_SUPPORTED
   }
 
-  fun buildHandoffIntent(pm: PackageManager, packageName: String, query: String): Pair<Intent, HandoffMethod>? {
+  fun buildHandoffIntent(
+    pm: PackageManager,
+    packageName: String,
+    query: String,
+  ): Pair<Intent, HandoffMethod>? {
     val method = detectHandoffMethod(pm, packageName)
     val flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
 
@@ -135,14 +156,136 @@ object AppHandoff {
     return intent to method
   }
 
-  fun launchSearch(context: Context, packageName: String, rawQuery: String): HandoffResult {
+  /**
+   * Executes the prioritized voice search handoff:
+   * 1. Current foreground app (if [searchInCurrentApp] is enabled, [sourcePackage] is present,
+   *    status is not [AppHandoffStatus.NOT_WORKING], and a direct search handoff method exists — or
+   *    the user explicitly marked it [AppHandoffStatus.CONFIRMED]).
+   * 2. Configured default target app ([defaultPackage]) unless marked [AppHandoffStatus.NOT_WORKING].
+   * 3. Failure result so the UI keeps the transcribed text and offers a quick D-pad app picker.
+   */
+  fun launchWithFallback(
+    context: Context,
+    sourcePackage: String?,
+    searchInCurrentApp: Boolean,
+    defaultPackage: String,
+    defaultLabel: String,
+    appStatuses: Map<String, AppHandoffStatus>,
+    rawQuery: String,
+  ): HandoffResult {
     val query = rawQuery.trim()
-    if (query.isEmpty()) return HandoffResult.Failed("Search text is empty.")
+    if (query.isEmpty()) {
+      return HandoffResult.Failed(defaultPackage, defaultLabel, "Search text is empty.")
+    }
 
     val pm = context.packageManager
+
+    Log.i(
+      TAG,
+      "Handoff start: source_package=${sourcePackage ?: "(home/none)"}, searchInCurrentApp=$searchInCurrentApp, default=$defaultPackage",
+    )
+
+    // Step 1: Current app target
+    if (searchInCurrentApp && !sourcePackage.isNullOrBlank()) {
+      val sourceStatus = appStatuses[sourcePackage] ?: AppHandoffStatus.UNKNOWN
+      val sourceMethod = detectHandoffMethod(pm, sourcePackage)
+      val sourceLabel = resolveAppLabel(pm, sourcePackage)
+
+      when {
+        sourceStatus == AppHandoffStatus.NOT_WORKING -> {
+          Log.i(
+            TAG,
+            "Fallback: source_package=$sourcePackage is marked NOT_WORKING; using default=$defaultPackage",
+          )
+        }
+        !sourceMethod.isDirectSearchMethod() && sourceStatus != AppHandoffStatus.CONFIRMED -> {
+          Log.i(
+            TAG,
+            "Fallback: source_package=$sourcePackage has no direct search handoff (detected=$sourceMethod, status=$sourceStatus); using default=$defaultPackage",
+          )
+        }
+        else -> {
+          Log.i(
+            TAG,
+            "Trying current app: package=$sourcePackage, method=$sourceMethod, status=$sourceStatus",
+          )
+          val currentOutcome =
+            launchSearch(
+              context = context,
+              packageName = sourcePackage,
+              appLabel = sourceLabel,
+              rawQuery = query,
+              usedCurrentApp = true,
+            )
+          if (currentOutcome is HandoffResult.Launched) {
+            Log.i(
+              TAG,
+              "Handoff succeeded (current app): package=$sourcePackage, method=${currentOutcome.method}",
+            )
+            return currentOutcome
+          }
+          Log.w(
+            TAG,
+            "Fallback: current app launch failed for $sourcePackage (${(currentOutcome as HandoffResult.Failed).message}); trying default=$defaultPackage",
+          )
+        }
+      }
+    } else {
+      val reason =
+        if (!searchInCurrentApp) "toggle OFF" else "no foreground app (home screen or ignored)"
+      Log.i(TAG, "Using configured default app ($reason): default=$defaultPackage")
+    }
+
+    // Step 2: Default app fallback
+    val defaultStatus = appStatuses[defaultPackage] ?: AppHandoffStatus.UNKNOWN
+    if (defaultStatus == AppHandoffStatus.NOT_WORKING) {
+      val msg = "Could not hand off to $defaultLabel (marked Not working)"
+      Log.w(TAG, "Handoff failed: $msg")
+      return HandoffResult.Failed(defaultPackage, defaultLabel, msg)
+    }
+
+    val defaultMethod = detectHandoffMethod(pm, defaultPackage)
+    Log.i(TAG, "Trying default app: package=$defaultPackage, method=$defaultMethod, status=$defaultStatus")
+    val defaultOutcome =
+      launchSearch(
+        context = context,
+        packageName = defaultPackage,
+        appLabel = defaultLabel,
+        rawQuery = query,
+        usedCurrentApp = false,
+      )
+    if (defaultOutcome is HandoffResult.Launched) {
+      Log.i(
+        TAG,
+        "Handoff succeeded (default app): package=$defaultPackage, method=${defaultOutcome.method}",
+      )
+    } else if (defaultOutcome is HandoffResult.Failed) {
+      Log.w(TAG, "Handoff failed (default app): ${defaultOutcome.message}")
+    }
+    return defaultOutcome
+  }
+
+  fun launchSearch(
+    context: Context,
+    packageName: String,
+    rawQuery: String,
+    appLabel: String? = null,
+    usedCurrentApp: Boolean = false,
+  ): HandoffResult {
+    val query = rawQuery.trim()
+    val pm = context.packageManager
+    val resolvedLabel = appLabel ?: resolveAppLabel(pm, packageName)
+    if (query.isEmpty()) {
+      return HandoffResult.Failed(packageName, resolvedLabel, "Search text is empty.")
+    }
+
     val built =
       buildHandoffIntent(pm, packageName, query)
-        ?: return HandoffResult.Failed("Target app $packageName is not installed or supported.")
+        ?: return HandoffResult.Failed(
+          packageName,
+          resolvedLabel,
+          "Could not hand off to $resolvedLabel (no search intent found)",
+        )
 
     val (intent, method) = built
     var copied = false
@@ -154,9 +297,33 @@ object AppHandoff {
 
     return try {
       context.startActivity(intent)
-      HandoffResult.Launched(method = method, copiedToClipboard = copied)
+      HandoffResult.Launched(
+        packageName = packageName,
+        appLabel = resolvedLabel,
+        method = method,
+        usedCurrentApp = usedCurrentApp,
+        copiedToClipboard = copied,
+      )
     } catch (e: Exception) {
-      HandoffResult.Failed("Failed to open $packageName: ${e.message ?: e.javaClass.simpleName}")
+      HandoffResult.Failed(
+        packageName,
+        resolvedLabel,
+        "Could not hand off to $resolvedLabel (${e.message ?: e.javaClass.simpleName})",
+      )
+    }
+  }
+
+  fun resolveAppLabel(pm: PackageManager, packageName: String): String {
+    return try {
+      val appInfo =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+          pm.getApplicationInfo(packageName, PackageManager.ApplicationInfoFlags.of(0))
+        } else {
+          @Suppress("DEPRECATION") pm.getApplicationInfo(packageName, 0)
+        }
+      pm.getApplicationLabel(appInfo)?.toString()?.ifBlank { packageName } ?: packageName
+    } catch (_: Exception) {
+      packageName
     }
   }
 
@@ -196,6 +363,7 @@ object AppHandoff {
       .sortedWith(
         compareBy<InstalledTvApp>(
           { priorityForPackage(it.packageName) },
+          { !it.handoffMethod.isDirectSearchMethod() },
           { it.handoffMethod == HandoffMethod.NOT_SUPPORTED },
           { it.label.lowercase() },
         )
