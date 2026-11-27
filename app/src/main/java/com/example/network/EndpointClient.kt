@@ -78,6 +78,7 @@ interface HttpTransport {
     readTimeoutMs: Int,
     tlsServerName: String? = null,
     ignoreSsl: Boolean = false,
+    onSseLine: ((String) -> Unit)? = null,
   ): HttpResponseData
 
   @Throws(IOException::class)
@@ -131,6 +132,7 @@ object UrlConnectionTransport : HttpTransport {
     readTimeoutMs: Int,
     tlsServerName: String?,
     ignoreSsl: Boolean,
+    onSseLine: ((String) -> Unit)?,
   ): HttpResponseData {
     val boundary = "----TvVoiceSearch${UUID.randomUUID().toString().replace("-", "")}"
     val bodyOut = ByteArrayOutputStream()
@@ -173,6 +175,7 @@ object UrlConnectionTransport : HttpTransport {
         readTimeoutMs = readTimeoutMs,
         tlsServerName = tlsServerName,
         ignoreSsl = ignoreSsl,
+        onSseLine = onSseLine,
       )
     }
 
@@ -191,7 +194,11 @@ object UrlConnectionTransport : HttpTransport {
       conn.useCaches = false
       conn.setFixedLengthStreamingMode(payload.size)
       conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-      conn.setRequestProperty("Accept", "application/json, text/plain;q=0.9")
+      conn.setRequestProperty(
+        "Accept",
+        if (onSseLine != null) "text/event-stream, application/json, text/plain;q=0.9"
+        else "application/json, text/plain;q=0.9",
+      )
       for ((k, v) in headers) {
         conn.setRequestProperty(k, v)
       }
@@ -202,10 +209,15 @@ object UrlConnectionTransport : HttpTransport {
       }
 
       val status = conn.responseCode
+      val contentType = conn.contentType.orEmpty().lowercase()
       val stream = if (status in 200..299) conn.inputStream else conn.errorStream
       val responseText =
         if (stream != null) {
-          BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
+          if (status in 200..299 && contentType.contains("text/event-stream") && onSseLine != null) {
+            readSseStream(stream, onSseLine)
+          } else {
+            BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
+          }
         } else {
           ""
         }
@@ -267,6 +279,18 @@ object UrlConnectionTransport : HttpTransport {
     }
   }
 
+  private fun readSseStream(input: InputStream, onSseLine: (String) -> Unit): String {
+    val all = StringBuilder()
+    BufferedReader(InputStreamReader(input, Charsets.UTF_8)).use { reader ->
+      while (true) {
+        val line = reader.readLine() ?: break
+        all.append(line).append('\n')
+        onSseLine(line)
+      }
+    }
+    return all.toString()
+  }
+
   private fun sendDirectHttp11(
     method: String,
     urlString: String,
@@ -276,6 +300,7 @@ object UrlConnectionTransport : HttpTransport {
     readTimeoutMs: Int,
     tlsServerName: String?,
     ignoreSsl: Boolean,
+    onSseLine: ((String) -> Unit)? = null,
   ): HttpResponseData {
     val uri = URI(urlString)
     val isHttps = uri.scheme.equals("https", ignoreCase = true)
@@ -329,8 +354,12 @@ object UrlConnectionTransport : HttpTransport {
       val headerText = buildString {
         append("$method $requestTarget HTTP/1.1\r\n")
         append("Host: $hostHeader\r\n")
-        append("User-Agent: TVVoiceSearch/1.0\r\n")
-        append("Accept: application/json, text/plain;q=0.9\r\n")
+        append("User-Agent: TVVoiceSearch/1.1\r\n")
+        if (onSseLine != null) {
+          append("Accept: text/event-stream, application/json, text/plain;q=0.9\r\n")
+        } else {
+          append("Accept: application/json, text/plain;q=0.9\r\n")
+        }
         append("Accept-Encoding: identity\r\n")
         if (payload != null) {
           append("Content-Length: ${payload.size}\r\n")
@@ -348,14 +377,17 @@ object UrlConnectionTransport : HttpTransport {
       }
       out.flush()
 
-      return readHttp11Response(BufferedInputStream(activeSocket.getInputStream()))
+      return readHttp11Response(BufferedInputStream(activeSocket.getInputStream()), onSseLine)
     } finally {
       runCatching { activeSocket.close() }
       runCatching { tcpSocket.close() }
     }
   }
 
-  internal fun readHttp11Response(input: InputStream): HttpResponseData {
+  internal fun readHttp11Response(
+    input: InputStream,
+    onSseLine: ((String) -> Unit)? = null,
+  ): HttpResponseData {
     var statusCode: Int
     val responseHeaders = linkedMapOf<String, String>()
 
@@ -384,7 +416,18 @@ object UrlConnectionTransport : HttpTransport {
     }
 
     val transferEncoding = responseHeaders["transfer-encoding"].orEmpty().lowercase()
+    val contentType = responseHeaders["content-type"].orEmpty().lowercase()
     val contentLength = responseHeaders["content-length"]?.toIntOrNull()
+
+    if (
+      statusCode in 200..299 &&
+        contentType.contains("text/event-stream") &&
+        !transferEncoding.contains("chunked") &&
+        onSseLine != null
+    ) {
+      val body = readSseStream(input, onSseLine)
+      return HttpResponseData(statusCode, body)
+    }
 
     val bodyBytes =
       when {
@@ -393,7 +436,11 @@ object UrlConnectionTransport : HttpTransport {
         else -> input.readBytes()
       }
 
-    return HttpResponseData(statusCode, bodyBytes.toString(Charsets.UTF_8))
+    val bodyText = bodyBytes.toString(Charsets.UTF_8)
+    if (statusCode in 200..299 && contentType.contains("text/event-stream") && onSseLine != null) {
+      bodyText.lineSequence().forEach { onSseLine(it) }
+    }
+    return HttpResponseData(statusCode, bodyText)
   }
 
   private fun readFixedBody(input: InputStream, length: Int): ByteArray {
@@ -745,13 +792,27 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           )
         if (response.statusCode == 200) {
           val parsed = parseOpenAiModelsJson(response.body)
-          if (parsed.isNotEmpty()) return parsed
+          if (parsed.isNotEmpty()) return filterRelevantModels(endpointUrl, parsed)
         }
       } catch (_: Exception) {
         // Ignore model discovery failure; endpoint transcription still works
       }
     }
     return emptyList()
+  }
+
+  internal fun filterRelevantModels(endpointUrl: String, models: List<String>): List<String> {
+    if (models.size <= 12 && !endpointUrl.contains("nvidia.com", ignoreCase = true)) {
+      return models
+    }
+    val audioKeywords =
+      listOf("whisper", "parakeet", "canary", "asr", "stt", "transcrib", "speech", "audio")
+    val audioModels =
+      models.filter { id -> audioKeywords.any { kw -> id.contains(kw, ignoreCase = true) } }
+    if (audioModels.isNotEmpty()) {
+      return audioModels.take(15)
+    }
+    return models.take(12)
   }
 
   internal fun buildOpenAiModelUrls(endpointUrl: String): List<String> {
@@ -833,7 +894,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           )
         when (response.statusCode) {
           200 -> {
-            if (isJsonWithTextField(response.body)) {
+            if (isJsonWithTextField(response.body) || looksLikeSseTranscript(response.body)) {
               return ProbeBatchOutcome(
                 result =
                   ProbeResult.Success(
@@ -855,7 +916,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
                   url = candidate.url,
                   family = candidate.family,
                   message =
-                    "Needs an API key (HTTP ${response.statusCode}). Enable 'Provide API key' above.",
+                    "API key needed (HTTP ${response.statusCode}). Enter a key or uncheck 'API key not needed'.",
                 ),
               hadConnectionError = false,
               lastError = null,
@@ -898,6 +959,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
     settings: AppSettings,
     onEndpointDetected: (String, ServerFamily) -> Unit,
     onEndpointInvalidated: () -> Unit,
+    onPartialText: ((String) -> Unit)? = null,
   ): TranscribeResult =
     withContext(Dispatchers.IO) {
       if (settings.endpointInput.isBlank()) {
@@ -940,7 +1002,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           is ProbeResult.NeedsApiKey -> {
             onEndpointDetected(probe.url, probe.family)
             return@withContext TranscribeResult.Failure(
-              "Needs an API key. Enable 'Provide API key' in Settings.",
+              "API key needed. Enter an API key or uncheck 'API key not needed' in Settings.",
               isAuthError = true,
             )
           }
@@ -960,6 +1022,8 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           language = settings.language,
           validatedOverrideIp = validatedIp,
           ignoreSsl = settings.ignoreSsl,
+          preferStreamingSse = settings.liveTranscription && onPartialText != null,
+          onPartialText = onPartialText,
           refreshed = refreshed,
         )
 
@@ -990,6 +1054,8 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
                   language = settings.language,
                   validatedOverrideIp = validatedIp,
                   ignoreSsl = settings.ignoreSsl,
+                  preferStreamingSse = settings.liveTranscription && onPartialText != null,
+                  onPartialText = onPartialText,
                   refreshed = true,
                 )
             ) {
@@ -1000,7 +1066,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           }
           is ProbeResult.NeedsApiKey -> {
             return@withContext TranscribeResult.Failure(
-              "Needs an API key. Enable 'Provide API key' in Settings.",
+              "API key needed. Enter an API key or uncheck 'API key not needed' in Settings.",
               isAuthError = true,
             )
           }
@@ -1032,10 +1098,34 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
     language: LanguageOption,
     validatedOverrideIp: String?,
     ignoreSsl: Boolean,
+    preferStreamingSse: Boolean,
+    onPartialText: ((String) -> Unit)?,
     refreshed: Boolean,
   ): InternalTranscribeOutcome {
     return try {
-      val response =
+      val sseAccumulator = StringBuilder()
+      val sseLineHandler: ((String) -> Unit)? =
+        if (onPartialText != null) {
+          { line ->
+            val delta = extractSseTextFragment(line)
+            if (delta != null) {
+              if (delta.isFinalReplacement) {
+                sseAccumulator.clear()
+                sseAccumulator.append(delta.text)
+              } else {
+                sseAccumulator.append(delta.text)
+              }
+              val current = sseAccumulator.toString().trim()
+              if (current.isNotEmpty()) {
+                onPartialText(current)
+              }
+            }
+          }
+        } else {
+          null
+        }
+
+      var response =
         sendAudioRequest(
           url = url,
           family = family,
@@ -1045,9 +1135,35 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           language = language,
           validatedOverrideIp = validatedOverrideIp,
           ignoreSsl = ignoreSsl,
+          streamSse = preferStreamingSse,
+          onSseLine = sseLineHandler,
           connectTimeoutMs = TRANSCRIBE_CONNECT_TIMEOUT_MS,
           readTimeoutMs = TRANSCRIBE_READ_TIMEOUT_MS,
         )
+
+      // Graceful fallback if endpoint rejects stream=true with 400/422/501
+      if (
+        preferStreamingSse &&
+          (response.statusCode == 400 || response.statusCode == 422 || response.statusCode == 501)
+      ) {
+        sseAccumulator.clear()
+        response =
+          sendAudioRequest(
+            url = url,
+            family = family,
+            wavBytes = wavBytes,
+            apiKey = apiKey,
+            modelName = modelName,
+            language = language,
+            validatedOverrideIp = validatedOverrideIp,
+            ignoreSsl = ignoreSsl,
+            streamSse = false,
+            onSseLine = null,
+            connectTimeoutMs = TRANSCRIBE_CONNECT_TIMEOUT_MS,
+            readTimeoutMs = TRANSCRIBE_READ_TIMEOUT_MS,
+          )
+      }
+
       when (response.statusCode) {
         200 -> {
           val text = parseTranscriptionText(response.body)
@@ -1093,6 +1209,8 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
     language: LanguageOption,
     validatedOverrideIp: String?,
     ignoreSsl: Boolean,
+    streamSse: Boolean = false,
+    onSseLine: ((String) -> Unit)? = null,
     connectTimeoutMs: Int,
     readTimeoutMs: Int,
   ): HttpResponseData {
@@ -1106,6 +1224,9 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
         fileFieldName = "file"
         fields["model"] = modelName.ifBlank { AppSettings.DEFAULT_MODEL_NAME }
         fields["response_format"] = "json"
+        if (streamSse) {
+          fields["stream"] = "true"
+        }
         language.code?.let { fields["language"] = it }
       }
       ServerFamily.WHISPER_CPP -> {
@@ -1143,14 +1264,55 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
       readTimeoutMs = readTimeoutMs,
       tlsServerName = target.tlsServerName,
       ignoreSsl = ignoreSsl,
+      onSseLine = onSseLine,
     )
+  }
+
+  private data class SseFragment(val text: String, val isFinalReplacement: Boolean)
+
+  private fun extractSseTextFragment(rawLine: String): SseFragment? {
+    val trimmed = rawLine.trim()
+    if (!trimmed.startsWith("data:")) return null
+    val payload = trimmed.removePrefix("data:").trim()
+    if (payload.isEmpty() || payload == "[DONE]") return null
+    if (!payload.startsWith("{")) return SseFragment(payload, isFinalReplacement = false)
+
+    return try {
+      val json = JSONObject(payload)
+      val type = json.optString("type", "")
+      when {
+        type == "transcript.text.done" && json.has("text") ->
+          SseFragment(json.optString("text", ""), isFinalReplacement = true)
+        type == "transcript.text.delta" && json.has("delta") ->
+          SseFragment(json.optString("delta", ""), isFinalReplacement = false)
+        json.has("delta") ->
+          SseFragment(json.optString("delta", ""), isFinalReplacement = false)
+        json.has("text") ->
+          SseFragment(json.optString("text", ""), isFinalReplacement = true)
+        json.has("transcript") ->
+          SseFragment(json.optString("transcript", ""), isFinalReplacement = true)
+        else -> {
+          val choices = json.optJSONArray("choices")
+          val deltaObj = choices?.optJSONObject(0)?.optJSONObject("delta")
+          val content = deltaObj?.optString("content", "").orEmpty()
+          if (content.isNotEmpty()) SseFragment(content, isFinalReplacement = false) else null
+        }
+      }
+    } catch (_: Exception) {
+      null
+    }
+  }
+
+  private fun looksLikeSseTranscript(body: String): Boolean {
+    return body.lineSequence().any { it.trimStart().startsWith("data:") }
   }
 
   internal fun isJsonWithTextField(body: String): Boolean {
     val trimmed = body.trim()
     if (!trimmed.startsWith("{")) return false
     return try {
-      JSONObject(trimmed).has("text")
+      val json = JSONObject(trimmed)
+      json.has("text") || json.has("transcript")
     } catch (_: Exception) {
       false
     }
@@ -1163,16 +1325,34 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
       lower.contains("multipart") ||
       lower.contains("wav") ||
       lower.contains("duration") ||
-      lower.contains("too short")
+      lower.contains("too short") ||
+      lower.contains("speech")
   }
 
   internal fun parseTranscriptionText(body: String): String {
     val trimmed = body.trim()
+    if (looksLikeSseTranscript(trimmed)) {
+      val builder = StringBuilder()
+      var finalOverride: String? = null
+      for (line in trimmed.lineSequence()) {
+        val frag = extractSseTextFragment(line) ?: continue
+        if (frag.isFinalReplacement) {
+          finalOverride = frag.text
+        } else {
+          builder.append(frag.text)
+        }
+      }
+      val assembled = (finalOverride ?: builder.toString()).trim()
+      if (assembled.isNotEmpty()) return assembled
+    }
     if (trimmed.startsWith("{")) {
       try {
         val json = JSONObject(trimmed)
         if (json.has("text")) {
           return json.optString("text", "").trim()
+        }
+        if (json.has("transcript")) {
+          return json.optString("transcript", "").trim()
         }
       } catch (_: Exception) {
         // Fallback to plain text

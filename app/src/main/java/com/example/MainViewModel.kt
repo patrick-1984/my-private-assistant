@@ -9,8 +9,10 @@ import androidx.lifecycle.viewModelScope
 import com.example.audio.AssistAudioBridge
 import com.example.audio.RecordingOutcome
 import com.example.audio.VoiceRecorder
+import com.example.data.ActivateProfileResult
 import com.example.data.AppHandoffStatus
 import com.example.data.AppSettings
+import com.example.data.EndpointProfile
 import com.example.data.LanguageOption
 import com.example.data.MicSource
 import com.example.data.SettingsRepository
@@ -57,6 +59,10 @@ data class MainUiState(
   val audioLevel: Float = 0f,
   val isSettingsOpen: Boolean = false,
   val settings: AppSettings = AppSettings(),
+  val profileDraft: EndpointProfile? = null,
+  val isDraftNew: Boolean = false,
+  val profileBanner: String? = null,
+  val isProfileBannerError: Boolean = false,
   val activeSourcePackage: String? = null,
   val showFallbackAppPicker: Boolean = false,
   val pendingVerificationApp: InstalledTvApp? = null,
@@ -149,7 +155,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
           it.copy(
             phase = VoicePhase.ERROR,
-            statusMessage = "No transcription endpoint set. Open Settings to configure.",
+            statusMessage = "No active transcription endpoint. Open Settings to configure.",
           )
         }
       } else {
@@ -171,7 +177,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       _uiState.update {
         it.copy(
           phase = VoicePhase.ERROR,
-          statusMessage = "No transcription endpoint set. Open Settings to configure.",
+          statusMessage = "No active transcription endpoint. Open Settings to configure.",
         )
       }
       return
@@ -243,6 +249,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                           )
                         },
                         onEndpointInvalidated = {},
+                        onPartialText = { deltaText ->
+                          if (_uiState.value.phase == VoicePhase.LISTENING && deltaText.isNotBlank()) {
+                            _uiState.update { it.copy(searchText = deltaText) }
+                          }
+                        },
                       )
                     if (
                       partial is TranscribeResult.Success &&
@@ -305,6 +316,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           settingsRepo.saveDetectedEndpoint(currentSettings.cacheKey, url, family)
         },
         onEndpointInvalidated = { settingsRepo.clearDetectedEndpoint() },
+        onPartialText = { liveDelta ->
+          if (_uiState.value.phase == VoicePhase.TRANSCRIBING && liveDelta.isNotBlank()) {
+            _uiState.update { it.copy(searchText = liveDelta) }
+          }
+        },
       )
 
     when (result) {
@@ -432,16 +448,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     refreshAssistantStatus()
     loadInstalledApps()
-    if (
-      settingsRepo.settings.value.hasValidCachedEndpoint &&
-        _uiState.value.availableModels.isEmpty()
-    ) {
+
+    val current = settingsRepo.settings.value
+    val openInitialNewDraft = current.activeProfile == null
+    val initialDraft =
+      if (openInitialNewDraft) {
+        EndpointProfile(
+          targetPackage = current.targetPackage,
+          targetLabel = current.targetLabel,
+          searchInCurrentApp = current.searchInCurrentApp,
+          language = current.language,
+          micSource = current.micSource,
+        )
+      } else {
+        null
+      }
+
+    if (current.hasValidCachedEndpoint && _uiState.value.availableModels.isEmpty()) {
       refreshAvailableModels()
     }
+
     _uiState.update {
       it.copy(
         isSettingsOpen = true,
         phase = VoicePhase.IDLE,
+        profileDraft = initialDraft,
+        isDraftNew = openInitialNewDraft,
+        testStatus = TestStatus.Idle,
+        profileBanner = null,
+        isProfileBannerError = false,
         copiedBanner = null,
       )
     }
@@ -451,47 +486,326 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     _uiState.update {
       it.copy(
         isSettingsOpen = false,
+        profileDraft = null,
+        isDraftNew = false,
         pendingVerificationApp = null,
+        profileBanner = null,
+        isProfileBannerError = false,
         copiedBanner = null,
         statusMessage = "",
       )
     }
   }
 
-  fun updateEndpointInput(input: String) {
-    settingsRepo.updateEndpointInput(input)
-    _uiState.update { it.copy(testStatus = TestStatus.Idle, availableModels = emptyList()) }
+  fun startNewProfileDraft() {
+    val current = settingsRepo.settings.value
+    _uiState.update {
+      it.copy(
+        profileDraft =
+          EndpointProfile(
+            targetPackage = current.targetPackage,
+            targetLabel = current.targetLabel,
+            searchInCurrentApp = current.searchInCurrentApp,
+            language = current.language,
+            micSource = current.micSource,
+          ),
+        isDraftNew = true,
+        testStatus = TestStatus.Idle,
+        availableModels = emptyList(),
+        profileBanner = null,
+        isProfileBannerError = false,
+      )
+    }
   }
 
-  fun setUseIpOverride(enabled: Boolean) {
-    settingsRepo.setUseIpOverride(enabled)
-    _uiState.update { it.copy(testStatus = TestStatus.Idle, availableModels = emptyList()) }
-  }
-
-  fun updateOverrideIp(ip: String) {
-    settingsRepo.updateOverrideIp(ip)
-    _uiState.update { it.copy(testStatus = TestStatus.Idle, availableModels = emptyList()) }
-  }
-
-  fun setIgnoreSsl(enabled: Boolean) {
-    settingsRepo.setIgnoreSsl(enabled)
-    _uiState.update { it.copy(testStatus = TestStatus.Idle, availableModels = emptyList()) }
-  }
-
-  fun setUseApiKey(enabled: Boolean) {
-    settingsRepo.setUseApiKey(enabled)
-    _uiState.update { it.copy(testStatus = TestStatus.Idle) }
-  }
-
-  fun setUseCustomModel(enabled: Boolean) {
-    settingsRepo.setUseCustomModel(enabled)
-    if (enabled && _uiState.value.availableModels.isEmpty()) {
+  fun editProfile(profile: EndpointProfile) {
+    _uiState.update {
+      it.copy(
+        profileDraft = profile,
+        isDraftNew = false,
+        testStatus = TestStatus.Idle,
+        availableModels = emptyList(),
+        profileBanner = null,
+        isProfileBannerError = false,
+      )
+    }
+    if (profile.hasValidCachedEndpoint) {
       refreshAvailableModels()
     }
   }
 
+  fun cancelProfileDraft() {
+    _uiState.update {
+      it.copy(
+        profileDraft = null,
+        isDraftNew = false,
+        testStatus = TestStatus.Idle,
+        availableModels = emptyList(),
+        profileBanner = null,
+        isProfileBannerError = false,
+      )
+    }
+  }
+
+  fun saveProfileDraftAndDone() {
+    val draft = _uiState.value.profileDraft ?: return
+    if (draft.endpointInput.isBlank() && !(draft.useIpOverride && draft.overrideIp.isNotBlank())) {
+      _uiState.update {
+        it.copy(testStatus = TestStatus.Error("Enter a transcription endpoint host or URL first."))
+      }
+      return
+    }
+
+    val outcome = settingsRepo.saveProfile(draft, activateIfEligible = true)
+    val savedName = draft.displayName
+    when (outcome) {
+      is ActivateProfileResult.MissingApiKey -> {
+        _uiState.update {
+          it.copy(
+            profileDraft = null,
+            isDraftNew = false,
+            testStatus = TestStatus.Idle,
+            profileBanner =
+              "Saved \"$savedName\" as inactive — API key needed to activate.",
+            isProfileBannerError = true,
+          )
+        }
+      }
+      is ActivateProfileResult.InvalidEndpoint -> {
+        _uiState.update {
+          it.copy(
+            profileDraft = null,
+            isDraftNew = false,
+            testStatus = TestStatus.Idle,
+            profileBanner = "Saved \"$savedName\" as inactive — endpoint URL is required.",
+            isProfileBannerError = true,
+          )
+        }
+      }
+      is ActivateProfileResult.Activated -> {
+        _uiState.update {
+          it.copy(
+            profileDraft = null,
+            isDraftNew = false,
+            testStatus = TestStatus.Idle,
+            profileBanner = "Saved & activated \"$savedName\"",
+            isProfileBannerError = false,
+          )
+        }
+      }
+      null -> {
+        _uiState.update {
+          it.copy(
+            profileDraft = null,
+            isDraftNew = false,
+            testStatus = TestStatus.Idle,
+            profileBanner = "Saved \"$savedName\"",
+            isProfileBannerError = false,
+          )
+        }
+      }
+    }
+  }
+
+  fun activateProfile(profile: EndpointProfile) {
+    when (val res = settingsRepo.activateProfile(profile.id)) {
+      is ActivateProfileResult.Activated -> {
+        _uiState.update {
+          it.copy(
+            profileBanner = "Active endpoint: ${res.profile.displayName}",
+            isProfileBannerError = false,
+          )
+        }
+      }
+      is ActivateProfileResult.MissingApiKey -> {
+        _uiState.update {
+          it.copy(
+            profileBanner =
+              "API key needed for \"${res.profile.displayName}\". Edit it to add your API key or check 'API key not needed'.",
+            isProfileBannerError = true,
+          )
+        }
+      }
+      is ActivateProfileResult.InvalidEndpoint -> {
+        _uiState.update {
+          it.copy(
+            profileBanner = "Endpoint URL is missing for \"${res.profile.displayName}\".",
+            isProfileBannerError = true,
+          )
+        }
+      }
+    }
+  }
+
+  fun deleteProfile(profile: EndpointProfile) {
+    settingsRepo.deleteProfile(profile.id)
+    _uiState.update { state ->
+      val clearedDraft = if (state.profileDraft?.id == profile.id) null else state.profileDraft
+      state.copy(
+        profileDraft = clearedDraft,
+        isDraftNew = if (clearedDraft == null) false else state.isDraftNew,
+        profileBanner = "Deleted \"${profile.displayName}\"",
+        isProfileBannerError = false,
+      )
+    }
+  }
+
+  fun updateProfileName(name: String) {
+    _uiState.update { state ->
+      val draft = state.profileDraft ?: return@update state
+      state.copy(profileDraft = draft.copy(customName = name))
+    }
+  }
+
+  fun updateEndpointInput(input: String) {
+    val draft = _uiState.value.profileDraft
+    if (draft != null) {
+      val trimmed = input.trimStart()
+      val nextCacheKey =
+        "${trimmed.trim()}|${draft.useIpOverride}|${draft.overrideIp.trim()}|${draft.ignoreSsl}"
+      val keepDetected = draft.detectedForInput == nextCacheKey
+      _uiState.update {
+        it.copy(
+          profileDraft =
+            draft.copy(
+              endpointInput = trimmed,
+              detectedEndpointUrl = if (keepDetected) draft.detectedEndpointUrl else "",
+              detectedFamily = if (keepDetected) draft.detectedFamily else null,
+              detectedForInput = if (keepDetected) draft.detectedForInput else "",
+            ),
+          testStatus = TestStatus.Idle,
+          availableModels = emptyList(),
+        )
+      }
+    } else {
+      settingsRepo.updateEndpointInput(input)
+      _uiState.update { it.copy(testStatus = TestStatus.Idle, availableModels = emptyList()) }
+    }
+  }
+
+  fun setUseIpOverride(enabled: Boolean) {
+    val draft = _uiState.value.profileDraft
+    if (draft != null) {
+      _uiState.update {
+        it.copy(
+          profileDraft =
+            draft.copy(
+              useIpOverride = enabled,
+              detectedEndpointUrl = "",
+              detectedFamily = null,
+              detectedForInput = "",
+            ),
+          testStatus = TestStatus.Idle,
+          availableModels = emptyList(),
+        )
+      }
+    } else {
+      settingsRepo.setUseIpOverride(enabled)
+      _uiState.update { it.copy(testStatus = TestStatus.Idle, availableModels = emptyList()) }
+    }
+  }
+
+  fun updateOverrideIp(ip: String) {
+    val draft = _uiState.value.profileDraft
+    if (draft != null) {
+      _uiState.update {
+        it.copy(
+          profileDraft =
+            draft.copy(
+              overrideIp = ip,
+              detectedEndpointUrl = "",
+              detectedFamily = null,
+              detectedForInput = "",
+            ),
+          testStatus = TestStatus.Idle,
+          availableModels = emptyList(),
+        )
+      }
+    } else {
+      settingsRepo.updateOverrideIp(ip)
+      _uiState.update { it.copy(testStatus = TestStatus.Idle, availableModels = emptyList()) }
+    }
+  }
+
+  fun setIgnoreSsl(enabled: Boolean) {
+    val draft = _uiState.value.profileDraft
+    if (draft != null) {
+      _uiState.update {
+        it.copy(
+          profileDraft =
+            draft.copy(
+              ignoreSsl = enabled,
+              detectedEndpointUrl = "",
+              detectedFamily = null,
+              detectedForInput = "",
+            ),
+          testStatus = TestStatus.Idle,
+          availableModels = emptyList(),
+        )
+      }
+    } else {
+      settingsRepo.setIgnoreSsl(enabled)
+      _uiState.update { it.copy(testStatus = TestStatus.Idle, availableModels = emptyList()) }
+    }
+  }
+
+  fun setApiKeyNotNeeded(notNeeded: Boolean) {
+    val draft = _uiState.value.profileDraft
+    if (draft != null) {
+      _uiState.update {
+        it.copy(
+          profileDraft = draft.copy(apiKeyNotNeeded = notNeeded),
+          testStatus = TestStatus.Idle,
+        )
+      }
+    } else {
+      settingsRepo.setUseApiKey(!notNeeded)
+      _uiState.update { it.copy(testStatus = TestStatus.Idle) }
+    }
+  }
+
+  fun setApiKey(apiKey: String) {
+    val draft = _uiState.value.profileDraft
+    if (draft != null) {
+      _uiState.update {
+        it.copy(profileDraft = draft.copy(apiKey = apiKey.trim()))
+      }
+    } else {
+      settingsRepo.setApiKey(apiKey)
+    }
+  }
+
+  fun setUseCustomModel(enabled: Boolean) {
+    val draft = _uiState.value.profileDraft
+    if (draft != null) {
+      _uiState.update { it.copy(profileDraft = draft.copy(useCustomModel = enabled)) }
+      if (enabled && _uiState.value.availableModels.isEmpty()) {
+        refreshAvailableModels()
+      }
+    } else {
+      settingsRepo.setUseCustomModel(enabled)
+      if (enabled && _uiState.value.availableModels.isEmpty()) {
+        refreshAvailableModels()
+      }
+    }
+  }
+
+  fun setModelName(modelName: String) {
+    val draft = _uiState.value.profileDraft
+    if (draft != null) {
+      _uiState.update { it.copy(profileDraft = draft.copy(modelName = modelName)) }
+    } else {
+      settingsRepo.setModelName(modelName)
+    }
+  }
+
   fun setLiveTranscription(enabled: Boolean) {
-    settingsRepo.setLiveTranscription(enabled)
+    val draft = _uiState.value.profileDraft
+    if (draft != null) {
+      _uiState.update { it.copy(profileDraft = draft.copy(liveTranscription = enabled)) }
+    } else {
+      settingsRepo.setLiveTranscription(enabled)
+    }
   }
 
   fun setMicButtonCapture(enabled: Boolean) {
@@ -499,7 +813,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   fun setSearchInCurrentApp(enabled: Boolean) {
-    settingsRepo.setSearchInCurrentApp(enabled)
+    val draft = _uiState.value.profileDraft
+    if (draft != null) {
+      _uiState.update { it.copy(profileDraft = draft.copy(searchInCurrentApp = enabled)) }
+    } else {
+      settingsRepo.setSearchInCurrentApp(enabled)
+    }
+  }
+
+  fun selectTargetApp(app: InstalledTvApp) {
+    val draft = _uiState.value.profileDraft
+    if (draft != null) {
+      _uiState.update {
+        it.copy(
+          profileDraft = draft.copy(targetPackage = app.packageName, targetLabel = app.label)
+        )
+      }
+    } else {
+      settingsRepo.setTargetApp(app.packageName, app.label)
+    }
+  }
+
+  fun setLanguage(language: LanguageOption) {
+    val draft = _uiState.value.profileDraft
+    if (draft != null) {
+      _uiState.update { it.copy(profileDraft = draft.copy(language = language)) }
+    } else {
+      settingsRepo.setLanguage(language)
+    }
+  }
+
+  fun setMicSource(micSource: MicSource) {
+    val draft = _uiState.value.profileDraft
+    if (draft != null) {
+      _uiState.update { it.copy(profileDraft = draft.copy(micSource = micSource)) }
+    } else {
+      settingsRepo.setMicSource(micSource)
+    }
   }
 
   fun testAppSearch(app: InstalledTvApp) {
@@ -548,25 +898,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   fun refreshAvailableModels() {
-    val current = settingsRepo.settings.value
-    if (current.endpointInput.isBlank()) return
+    val probeTarget = _uiState.value.profileDraft?.toProbeSettings() ?: settingsRepo.settings.value
+    if (probeTarget.endpointInput.isBlank()) return
     viewModelScope.launch {
       _uiState.update { it.copy(isFetchingModels = true) }
       val models =
         endpointClient.fetchModels(
-          detectedUrl = current.detectedEndpointUrl,
-          rawInput = current.endpointInput,
-          apiKey = current.effectiveApiKey,
-          useIpOverride = current.useIpOverride,
-          overrideIp = current.overrideIp,
-          ignoreSsl = current.ignoreSsl,
+          detectedUrl = probeTarget.detectedEndpointUrl,
+          rawInput = probeTarget.endpointInput,
+          apiKey = probeTarget.effectiveApiKey,
+          useIpOverride = probeTarget.useIpOverride,
+          overrideIp = probeTarget.overrideIp,
+          ignoreSsl = probeTarget.ignoreSsl,
         )
       _uiState.update { it.copy(availableModels = models, isFetchingModels = false) }
     }
   }
 
   fun testEndpoint() {
-    val current = settingsRepo.settings.value
+    val draft = _uiState.value.profileDraft
+    val current = draft?.toProbeSettings() ?: settingsRepo.settings.value
     if (current.endpointInput.isBlank()) {
       _uiState.update {
         it.copy(testStatus = TestStatus.Error("Enter an endpoint host or URL first."))
@@ -575,7 +926,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     if (current.useApiKey && current.apiKey.isBlank()) {
       _uiState.update {
-        it.copy(testStatus = TestStatus.Error("Enter an API key or uncheck 'Provide API key'."))
+        it.copy(
+          testStatus =
+            TestStatus.Error("API key needed — enter an API key or check 'API key not needed'.")
+        )
       }
       return
     }
@@ -593,43 +947,64 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
       when (probe) {
         is ProbeResult.Success -> {
-          settingsRepo.saveDetectedEndpoint(current.cacheKey, probe.url, probe.family)
-          _uiState.update {
-            it.copy(
-              testStatus = TestStatus.Ok(probe.message),
-              availableModels = probe.availableModels,
-            )
+          if (draft != null) {
+            _uiState.update { state ->
+              val currentDraft = state.profileDraft
+              val updatedDraft =
+                if (currentDraft?.id == draft.id) {
+                  currentDraft.copy(
+                    detectedEndpointUrl = probe.url,
+                    detectedFamily = probe.family,
+                    detectedForInput = currentDraft.cacheKey,
+                  )
+                } else {
+                  currentDraft
+                }
+              state.copy(
+                profileDraft = updatedDraft,
+                testStatus = TestStatus.Ok(probe.message),
+                availableModels = probe.availableModels,
+              )
+            }
+          } else {
+            settingsRepo.saveDetectedEndpoint(current.cacheKey, probe.url, probe.family)
+            _uiState.update {
+              it.copy(
+                testStatus = TestStatus.Ok(probe.message),
+                availableModels = probe.availableModels,
+              )
+            }
           }
         }
         is ProbeResult.NeedsApiKey -> {
-          settingsRepo.saveDetectedEndpoint(current.cacheKey, probe.url, probe.family)
-          _uiState.update { it.copy(testStatus = TestStatus.Warning(probe.message)) }
+          if (draft != null) {
+            _uiState.update { state ->
+              val currentDraft = state.profileDraft
+              val updatedDraft =
+                if (currentDraft?.id == draft.id) {
+                  currentDraft.copy(
+                    detectedEndpointUrl = probe.url,
+                    detectedFamily = probe.family,
+                    detectedForInput = currentDraft.cacheKey,
+                  )
+                } else {
+                  currentDraft
+                }
+              state.copy(
+                profileDraft = updatedDraft,
+                testStatus = TestStatus.Warning(probe.message),
+              )
+            }
+          } else {
+            settingsRepo.saveDetectedEndpoint(current.cacheKey, probe.url, probe.family)
+            _uiState.update { it.copy(testStatus = TestStatus.Warning(probe.message)) }
+          }
         }
         is ProbeResult.Failure -> {
           _uiState.update { it.copy(testStatus = TestStatus.Error(probe.message)) }
         }
       }
     }
-  }
-
-  fun selectTargetApp(app: InstalledTvApp) {
-    settingsRepo.setTargetApp(app.packageName, app.label)
-  }
-
-  fun setLanguage(language: LanguageOption) {
-    settingsRepo.setLanguage(language)
-  }
-
-  fun setApiKey(apiKey: String) {
-    settingsRepo.setApiKey(apiKey)
-  }
-
-  fun setModelName(modelName: String) {
-    settingsRepo.setModelName(modelName)
-  }
-
-  fun setMicSource(micSource: MicSource) {
-    settingsRepo.setMicSource(micSource)
   }
 
   fun refreshAssistantStatus() {
@@ -654,6 +1029,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ?: apps.firstOrNull { it.packageName == AppHandoff.PKG_NEWPIPE }
         if (preferred != null) {
           settingsRepo.setTargetApp(preferred.packageName, preferred.label)
+          _uiState.update { state ->
+            val draft = state.profileDraft
+            if (draft != null && draft.targetPackage == currentTarget) {
+              state.copy(
+                profileDraft =
+                  draft.copy(targetPackage = preferred.packageName, targetLabel = preferred.label)
+              )
+            } else {
+              state
+            }
+          }
         }
       }
       _uiState.update { it.copy(installedApps = apps, isLoadingApps = false) }

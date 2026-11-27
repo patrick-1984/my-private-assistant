@@ -2,9 +2,7 @@ package com.example.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -21,50 +19,39 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Warning
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.MainUiState
-import com.example.R
 import com.example.TestStatus
-import com.example.data.AppHandoffStatus
+import com.example.data.EndpointProfile
 import com.example.data.LanguageOption
 import com.example.data.MicSource
-import com.example.handoff.HandoffMethod
 import com.example.handoff.InstalledTvApp
-import com.example.ui.components.TvFocusableCard
 import com.example.ui.components.TvPrimaryButton
 import com.example.ui.components.TvSecondaryButton
 import com.example.ui.theme.TvAmber
@@ -84,11 +71,18 @@ import com.example.ui.theme.TvTextSecondary
 fun SettingsScreen(
   state: MainUiState,
   onBack: () -> Unit,
+  onStartNewProfile: () -> Unit,
+  onEditProfile: (EndpointProfile) -> Unit,
+  onActivateProfile: (EndpointProfile) -> Unit,
+  onDeleteProfile: (EndpointProfile) -> Unit,
+  onSaveProfileDone: () -> Unit,
+  onCancelProfileDraft: () -> Unit,
+  onProfileNameChange: (String) -> Unit,
   onEndpointChange: (String) -> Unit,
   onToggleIpOverride: (Boolean) -> Unit,
   onOverrideIpChange: (String) -> Unit,
   onToggleIgnoreSsl: (Boolean) -> Unit,
-  onToggleApiKey: (Boolean) -> Unit,
+  onToggleApiKeyNotNeeded: (Boolean) -> Unit,
   onTestEndpoint: () -> Unit,
   onToggleCustomModel: (Boolean) -> Unit,
   onRefreshModels: () -> Unit,
@@ -107,8 +101,6 @@ fun SettingsScreen(
   onRefreshAssistantStatus: () -> Unit,
   onCopyAdbCommand: (String, String) -> Unit,
 ) {
-  val testPassed = state.testStatus is TestStatus.Ok || state.settings.hasValidCachedEndpoint
-
   BoxWithConstraints(
     modifier = Modifier.fillMaxSize().background(TvBackground),
     contentAlignment = Alignment.TopCenter,
@@ -117,6 +109,9 @@ fun SettingsScreen(
     val hPad = if (isCompact) 16.dp else 36.dp
     val vPad = if (isCompact) 16.dp else 28.dp
     val cardPad = if (isCompact) 18.dp else 24.dp
+
+    val activeProfile = state.settings.activeProfile
+    val draft = state.profileDraft
 
     LazyColumn(
       modifier = Modifier.fillMaxWidth().widthIn(max = 1000.dp).testTag("settings_list"),
@@ -153,461 +148,152 @@ fun SettingsScreen(
         }
       }
 
-      // 1. Transcription endpoint (inputs top-to-bottom -> Test at bottom -> Post-test options)
+      // 1. Saved Configuration Sets (Master List)
       item {
-        SettingsSectionCard(title = "1. Transcription Endpoint", cardPadding = cardPad) {
-          EndpointTextField(
-            value = state.settings.endpointInput,
-            onValueChange = onEndpointChange,
-            onDone = onTestEndpoint,
-            modifier = Modifier.fillMaxWidth().testTag("endpoint_input"),
-          )
-
-          // Checkbox 1: IP override for FQDN / split-DNS / Tailscale setups
-          TvCheckboxRow(
-            checked = state.settings.useIpOverride,
-            onCheckedChange = onToggleIpOverride,
-            title = "Override server IP address",
-            subtitle =
-              "Connect directly to this IP (LAN / Tailscale) while keeping the hostname and Host/SNI headers",
-            modifier = Modifier.testTag("use_ip_override_checkbox"),
-          )
-
-          AnimatedVisibility(visible = state.settings.useIpOverride) {
-            Column(
-              modifier = Modifier.fillMaxWidth(),
-              verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-              Text(
-                text = "Server IP address (IP only, no port or path)",
-                style = MaterialTheme.typography.bodyMedium,
-                color = TvTextSecondary,
-              )
-              OutlinedTextField(
-                value = state.settings.overrideIp,
-                onValueChange = onOverrideIpChange,
-                singleLine = true,
-                textStyle = MaterialTheme.typography.bodyLarge.copy(color = TvTextPrimary),
-                placeholder = {
-                  Text(
-                    text = "e.g. 10.3.3.20 or 100.64.1.5",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TvTextSecondary.copy(alpha = 0.7f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                  )
-                },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { onTestEndpoint() }),
-                shape = RoundedCornerShape(14.dp),
-                colors =
-                  OutlinedTextFieldDefaults.colors(
-                    focusedContainerColor = TvSurfaceFocus,
-                    unfocusedContainerColor = TvSurfaceElevated,
-                    focusedBorderColor = TvCyan,
-                    unfocusedBorderColor = TvOutline,
-                    cursorColor = TvCyan,
-                  ),
-                modifier = Modifier.fillMaxWidth().testTag("override_ip_input"),
-              )
-            }
-          }
-
-          // Checkbox 2: Ignore SSL certificate checks
-          TvCheckboxRow(
-            checked = state.settings.ignoreSsl,
-            onCheckedChange = onToggleIgnoreSsl,
-            title = "Ignore SSL certificate checks",
-            subtitle =
-              "Allow self-signed or private-CA HTTPS certificates on local/Tailscale servers",
-            modifier = Modifier.testTag("use_ignore_ssl_checkbox"),
-          )
-
-          // Checkbox 3: Provide API key (OpenAI Authorization: Bearer)
-          TvCheckboxRow(
-            checked = state.settings.useApiKey,
-            onCheckedChange = onToggleApiKey,
-            title = "Provide API key",
-            subtitle = "Include Authorization: Bearer token per OpenAI API specification",
-            modifier = Modifier.testTag("use_api_key_checkbox"),
-          )
-
-          AnimatedVisibility(visible = state.settings.useApiKey) {
-            Column(
-              modifier = Modifier.fillMaxWidth(),
-              verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-              Text(
-                text = "API key (sent as Authorization: Bearer)",
-                style = MaterialTheme.typography.bodyMedium,
-                color = TvTextSecondary,
-              )
-              OutlinedTextField(
-                value = state.settings.apiKey,
-                onValueChange = onApiKeyChange,
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                textStyle = MaterialTheme.typography.bodyLarge.copy(color = TvTextPrimary),
-                placeholder = {
-                  Text(
-                    text = "sk-… or server bearer token",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TvTextSecondary.copy(alpha = 0.7f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                  )
-                },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { onTestEndpoint() }),
-                shape = RoundedCornerShape(14.dp),
-                colors =
-                  OutlinedTextFieldDefaults.colors(
-                    focusedContainerColor = TvSurfaceFocus,
-                    unfocusedContainerColor = TvSurfaceElevated,
-                    focusedBorderColor = TvCyan,
-                    unfocusedBorderColor = TvOutline,
-                    cursorColor = TvCyan,
-                  ),
-                modifier = Modifier.fillMaxWidth().testTag("api_key_input"),
-              )
-            }
-          }
-
-          // Test Connection action bar at the END of the endpoint fields (button + green check status)
-          val cachedLabel =
-            if (state.settings.hasValidCachedEndpoint && state.testStatus == TestStatus.Idle) {
-              val viaIp =
-                if (state.settings.useIpOverride && state.settings.overrideIp.isNotBlank()) {
-                  " (via ${state.settings.overrideIp.trim()})"
-                } else {
-                  ""
-                }
-              "Connected: ${state.settings.detectedEndpointUrl}$viaIp"
-            } else {
-              null
-            }
-
-          if (isCompact) {
-            Column(
-              modifier = Modifier.fillMaxWidth(),
-              verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-              TestEndpointButton(
-                isTesting = state.testStatus == TestStatus.Testing,
-                onClick = onTestEndpoint,
-                modifier = Modifier.fillMaxWidth().testTag("test_endpoint_button"),
-              )
-              EndpointStatusBadge(
-                testStatus = state.testStatus,
-                cachedOkMessage = cachedLabel,
-                modifier = Modifier.fillMaxWidth(),
-              )
-            }
-          } else {
-            Row(
-              modifier = Modifier.fillMaxWidth(),
-              horizontalArrangement = Arrangement.spacedBy(14.dp),
-              verticalAlignment = Alignment.CenterVertically,
-            ) {
-              TestEndpointButton(
-                isTesting = state.testStatus == TestStatus.Testing,
-                onClick = onTestEndpoint,
-                modifier = Modifier.testTag("test_endpoint_button"),
-              )
-              EndpointStatusBadge(
-                testStatus = state.testStatus,
-                cachedOkMessage = cachedLabel,
-                modifier = Modifier.weight(1f),
-              )
-            }
-          }
-
-          // Post-Test Options: Custom Model / OpenAI /v1/models Picker & Live Chunked Transcription
-          AnimatedVisibility(visible = testPassed) {
-            Column(
-              modifier = Modifier.fillMaxWidth(),
-              verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-              TvCheckboxRow(
-                checked = state.settings.useCustomModel,
-                onCheckedChange = onToggleCustomModel,
-                title = "Pick custom model / endpoint",
-                subtitle =
-                  if (state.availableModels.isNotEmpty()) {
-                    "Discovered ${state.availableModels.size} OpenAI model(s) on server"
-                  } else {
-                    "Query OpenAI /v1/models or specify a custom transcription model"
-                  },
-                modifier = Modifier.testTag("use_custom_model_checkbox"),
-              )
-
-              AnimatedVisibility(visible = state.settings.useCustomModel) {
-                Column(
-                  modifier = Modifier.fillMaxWidth(),
-                  verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                  Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                  ) {
-                    Text(
-                      text =
-                        when {
-                          state.isFetchingModels -> "Querying /v1/models…"
-                          state.availableModels.isNotEmpty() -> "Server OpenAI models:"
-                          else -> "Model ID (sent to transcription endpoint):"
-                        },
-                      style = MaterialTheme.typography.bodyMedium,
-                      color = TvTextSecondary,
-                      modifier = Modifier.weight(1f),
-                    )
-                    TvSecondaryButton(
-                      onClick = onRefreshModels,
-                      enabled = !state.isFetchingModels,
-                      contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                      modifier = Modifier.testTag("refresh_models_button"),
-                    ) {
-                      Icon(
-                        imageVector = Icons.Rounded.Refresh,
-                        contentDescription = "Query OpenAI models",
-                        tint = TvCyan,
-                        modifier = Modifier.size(18.dp),
-                      )
-                      Spacer(modifier = Modifier.width(6.dp))
-                      Text("Query", style = MaterialTheme.typography.labelLarge, maxLines = 1)
-                    }
-                  }
-
-                  if (state.availableModels.isNotEmpty()) {
-                    FlowRow(
-                      modifier = Modifier.fillMaxWidth(),
-                      horizontalArrangement = Arrangement.spacedBy(8.dp),
-                      verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                      state.availableModels.forEach { modelId ->
-                        val selected = state.settings.modelName == modelId
-                        TvSecondaryButton(
-                          onClick = { onModelNameChange(modelId) },
-                          isSelected = selected,
-                          contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                          modifier = Modifier.testTag("model_chip_$modelId"),
-                        ) {
-                          if (selected) {
-                            Icon(
-                              imageVector = Icons.Rounded.Check,
-                              contentDescription = null,
-                              tint = TvCyan,
-                              modifier = Modifier.size(18.dp),
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                          }
-                          Text(
-                            text = modelId,
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                          )
-                        }
-                      }
-                    }
-                  }
-
-                  OutlinedTextField(
-                    value = state.settings.modelName,
-                    onValueChange = onModelNameChange,
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = TvTextPrimary),
-                    placeholder = {
-                      Text(
-                        text = "whisper-1",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TvTextSecondary.copy(alpha = 0.7f),
-                      )
-                    },
-                    shape = RoundedCornerShape(14.dp),
-                    colors =
-                      OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = TvSurfaceFocus,
-                        unfocusedContainerColor = TvSurfaceElevated,
-                        focusedBorderColor = TvCyan,
-                        unfocusedBorderColor = TvOutline,
-                        cursorColor = TvCyan,
-                      ),
-                    modifier = Modifier.fillMaxWidth().testTag("model_input"),
-                  )
-                }
-              }
-
-              TvCheckboxRow(
-                checked = state.settings.liveTranscription,
-                onCheckedChange = onToggleLiveTranscription,
-                title = "Live transcription (chunked streaming)",
-                subtitle =
-                  "Send progressive audio chunks while speaking for live words in the search bar",
-                modifier = Modifier.testTag("live_transcription_checkbox"),
-              )
-            }
-          }
-        }
-      }
-
-      // 2. Target & current-app search
-      item {
-        SettingsSectionCard(title = "2. Target & Current-App Search", cardPadding = cardPad) {
-          TvSwitchRow(
-            checked = state.settings.searchInCurrentApp,
-            onCheckedChange = onToggleSearchInCurrentApp,
-            title = "Search in the current app",
-            subtitle =
-              "Send voice queries to the active app when it supports search; otherwise fall back to the default app below",
-            modifier = Modifier.testTag("search_current_app_switch"),
-          )
-
-          AnimatedVisibility(visible = state.pendingVerificationApp != null) {
-            state.pendingVerificationApp?.let { pendingApp ->
-              Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = TvSurfaceFocus,
-                border = BorderStroke(1.5.dp, TvCyan),
-                modifier = Modifier.fillMaxWidth().testTag("pending_verification_banner"),
-              ) {
-                Column(
-                  modifier = Modifier.fillMaxWidth().padding(14.dp),
-                  verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                  Text(
-                    text = "Did search results appear in ${pendingApp.label}?",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TvTextPrimary,
-                  )
-                  FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                  ) {
-                    TvPrimaryButton(
-                      onClick = { onConfirmAppTest(true) },
-                      contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
-                      modifier = Modifier.testTag("confirm_app_works_button"),
-                    ) {
-                      Icon(
-                        imageVector = Icons.Rounded.Check,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                      )
-                      Spacer(modifier = Modifier.width(6.dp))
-                      Text("Yes, worked", style = MaterialTheme.typography.labelLarge, maxLines = 1)
-                    }
-                    TvSecondaryButton(
-                      onClick = { onConfirmAppTest(false) },
-                      contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
-                      modifier = Modifier.testTag("confirm_app_broken_button"),
-                    ) {
-                      Text("No, not working", style = MaterialTheme.typography.labelLarge, maxLines = 1)
-                    }
-                    TvSecondaryButton(
-                      onClick = onDismissPendingVerification,
-                      contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                      modifier = Modifier.testTag("dismiss_app_verify_button"),
-                    ) {
-                      Text("Cancel", style = MaterialTheme.typography.labelLarge, maxLines = 1)
-                    }
-                  }
-                }
-              }
-            }
-          }
-
+        SettingsSectionCard(title = "1. Configuration Sets", cardPadding = cardPad) {
           Text(
-            text = "Default target app (used on Home or when current app does not support search):",
+            text =
+              "Each set stores an endpoint, API key, target app, language, and mic setting. Activate, edit, or delete sets anytime:",
             style = MaterialTheme.typography.bodyMedium,
             color = TvTextSecondary,
           )
 
-          if (state.isLoadingApps && state.installedApps.isEmpty()) {
-            Row(
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-              CircularProgressIndicator(
-                color = TvCyan,
-                strokeWidth = 3.dp,
-                modifier = Modifier.size(24.dp),
-              )
-              Text(
-                text = "Scanning installed TV apps…",
-                style = MaterialTheme.typography.bodyMedium,
-                color = TvTextSecondary,
-              )
+          AnimatedVisibility(visible = state.profileBanner != null) {
+            state.profileBanner?.let { msg ->
+              val color = if (state.isProfileBannerError) TvCoral else TvEmerald
+              Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = color.copy(alpha = 0.14f),
+                border = BorderStroke(1.dp, color.copy(alpha = 0.65f)),
+                modifier = Modifier.fillMaxWidth(),
+              ) {
+                Row(
+                  modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                  Icon(
+                    imageVector =
+                      if (state.isProfileBannerError) Icons.Rounded.Warning
+                      else Icons.Rounded.CheckCircle,
+                    contentDescription = null,
+                    tint = color,
+                    modifier = Modifier.size(22.dp),
+                  )
+                  Text(
+                    text = msg,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = color,
+                    modifier = Modifier.testTag("profile_banner_text"),
+                  )
+                }
+              }
             }
-          } else if (state.installedApps.isEmpty()) {
+          }
+
+          if (state.settings.profiles.isEmpty()) {
             Text(
-              text = "No installed TV apps found.",
+              text = "No saved configurations yet. Create one below.",
               style = MaterialTheme.typography.bodyMedium,
               color = TvAmber,
             )
           } else {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-              state.installedApps.forEach { app ->
-                TargetAppRow(
-                  app = app,
-                  isSelected = app.packageName == state.settings.targetPackage,
-                  handoffStatus = state.settings.handoffStatusFor(app.packageName),
-                  isCompact = isCompact,
-                  onClick = { onSelectTargetApp(app) },
-                  onTestSearch = { onTestAppSearch(app) },
-                  onToggleNeverUse = { onToggleNeverUseApp(app) },
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+              state.settings.profiles.forEach { profile ->
+                val isActive = profile.id == state.settings.activeProfileId
+                ProfileListRow(
+                  profile = profile,
+                  isActive = isActive,
+                  isBeingEdited = draft?.id == profile.id,
+                  onActivate = { onActivateProfile(profile) },
+                  onEdit = { onEditProfile(profile) },
+                  onDelete = { onDeleteProfile(profile) },
                 )
               }
             }
           }
-        }
-      }
 
-      // 3. Language
-      item {
-        SettingsSectionCard(title = "3. Language", cardPadding = cardPad) {
-          Text(
-            text = "Sent to the server only when not set to Auto.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = TvTextSecondary,
-          )
-          FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+          TvSecondaryButton(
+            onClick = onStartNewProfile,
+            modifier = Modifier.testTag("add_profile_button"),
           ) {
-            LanguageOption.entries.forEach { option ->
-              val selected = state.settings.language == option
-              TvSecondaryButton(
-                onClick = { onSelectLanguage(option) },
-                isSelected = selected,
-                modifier = Modifier.testTag("lang_${option.name.lowercase()}"),
-              ) {
-                if (selected) {
-                  Icon(
-                    imageVector = Icons.Rounded.Check,
-                    contentDescription = null,
-                    tint = TvCyan,
-                    modifier = Modifier.size(20.dp),
-                  )
-                  Spacer(modifier = Modifier.width(6.dp))
-                }
-                Text(
-                  text = option.label,
-                  style = MaterialTheme.typography.titleMedium,
-                  maxLines = 1,
-                )
-              }
-            }
+            Icon(
+              imageVector = Icons.Rounded.Add,
+              contentDescription = null,
+              tint = TvCyan,
+              modifier = Modifier.size(20.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Add Endpoint Configuration", style = MaterialTheme.typography.titleMedium, maxLines = 1)
           }
         }
       }
 
-      // 4. Remote Mic Button & Audio Source
+      // 2. Configuration Set Editor (auto-open on first run when activeProfile == null, or on Add / Edit)
+      if (draft != null) {
+        item {
+          ConfigurationEditorCard(
+            draft = draft,
+            isNew = state.isDraftNew,
+            testStatus = state.testStatus,
+            availableModels = state.availableModels,
+            isFetchingModels = state.isFetchingModels,
+            installedApps = state.installedApps,
+            isLoadingApps = state.isLoadingApps,
+            handoffStatuses = state.settings.appHandoffStatuses,
+            pendingVerificationApp = state.pendingVerificationApp,
+            isCompact = isCompact,
+            cardPad = cardPad,
+            onProfileNameChange = onProfileNameChange,
+            onEndpointChange = onEndpointChange,
+            onToggleIpOverride = onToggleIpOverride,
+            onOverrideIpChange = onOverrideIpChange,
+            onToggleIgnoreSsl = onToggleIgnoreSsl,
+            onToggleApiKeyNotNeeded = onToggleApiKeyNotNeeded,
+            onApiKeyChange = onApiKeyChange,
+            onTestEndpoint = onTestEndpoint,
+            onToggleCustomModel = onToggleCustomModel,
+            onRefreshModels = onRefreshModels,
+            onModelNameChange = onModelNameChange,
+            onToggleLiveTranscription = onToggleLiveTranscription,
+            onToggleSearchInCurrentApp = onToggleSearchInCurrentApp,
+            onSelectTargetApp = onSelectTargetApp,
+            onTestAppSearch = onTestAppSearch,
+            onConfirmAppTest = onConfirmAppTest,
+            onDismissPendingVerification = onDismissPendingVerification,
+            onToggleNeverUseApp = onToggleNeverUseApp,
+            onSelectLanguage = onSelectLanguage,
+            onSelectMicSource = onSelectMicSource,
+            onSaveDone = onSaveProfileDone,
+            onCancel = onCancelProfileDraft,
+          )
+        }
+      } else if (activeProfile != null) {
+        // Active Configuration quick controls when editor is closed
+        item {
+          TargetAppSectionCard(
+            title = "2. Active Set — Target & Current-App Search (${activeProfile.displayName})",
+            searchInCurrentApp = activeProfile.searchInCurrentApp,
+            installedApps = state.installedApps,
+            isLoadingApps = state.isLoadingApps,
+            selectedTargetPackage = activeProfile.targetPackage,
+            handoffStatuses = state.settings.appHandoffStatuses,
+            pendingVerificationApp = state.pendingVerificationApp,
+            isCompact = isCompact,
+            cardPad = cardPad,
+            onToggleSearchInCurrentApp = onToggleSearchInCurrentApp,
+            onSelectTargetApp = onSelectTargetApp,
+            onTestAppSearch = onTestAppSearch,
+            onConfirmAppTest = onConfirmAppTest,
+            onDismissPendingVerification = onDismissPendingVerification,
+            onToggleNeverUseApp = onToggleNeverUseApp,
+          )
+        }
+      }
+
+      // Global: Remote Mic Button & Accessibility
       item {
-        SettingsSectionCard(title = "4. Remote Mic & Audio", cardPadding = cardPad) {
+        SettingsSectionCard(title = "Remote Mic Key (Global)", cardPadding = cardPad) {
           TvSwitchRow(
             checked = state.settings.micButtonCapture,
             onCheckedChange = onToggleMicCapture,
@@ -628,38 +314,13 @@ fun SettingsScreen(
             color = TvTextSecondary,
             modifier = Modifier.testTag("mic_privacy_note"),
           )
-
-          Text(
-            text = "Microphone Source",
-            style = MaterialTheme.typography.bodyMedium,
-            color = TvTextSecondary,
-          )
-          FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-          ) {
-            MicSource.entries.forEach { source ->
-              val selected = state.settings.micSource == source
-              TvSecondaryButton(
-                onClick = { onSelectMicSource(source) },
-                isSelected = selected,
-              ) {
-                Text(
-                  text = source.label,
-                  style = MaterialTheme.typography.labelLarge,
-                  maxLines = 1,
-                )
-              }
-            }
-          }
         }
       }
 
-      // 5. Assistant & Accessibility Status
+      // Global: Assistant & Accessibility Status
       item {
         val status = state.assistantStatus
-        SettingsSectionCard(title = "5. Assistant & Service Status", cardPadding = cardPad) {
+        SettingsSectionCard(title = "Assistant & Service Status", cardPadding = cardPad) {
           if (status != null) {
             RoleStatusRow(
               label = "Default Assistant",
@@ -728,587 +389,672 @@ fun SettingsScreen(
   }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun EndpointStatusBadge(
-  testStatus: TestStatus,
-  cachedOkMessage: String?,
-  modifier: Modifier = Modifier,
+private fun ProfileListRow(
+  profile: EndpointProfile,
+  isActive: Boolean,
+  isBeingEdited: Boolean,
+  onActivate: () -> Unit,
+  onEdit: () -> Unit,
+  onDelete: () -> Unit,
 ) {
-  when {
-    testStatus == TestStatus.Testing -> {
-      Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = TvCyan.copy(alpha = 0.12f),
-        border = BorderStroke(1.dp, TvCyan.copy(alpha = 0.45f)),
-        modifier = modifier,
-      ) {
-        Row(
-          modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-          CircularProgressIndicator(
-            color = TvCyan,
-            strokeWidth = 2.5.dp,
-            modifier = Modifier.size(20.dp),
-          )
-          Text(
-            text = "Testing endpoint & querying models…",
-            style = MaterialTheme.typography.bodyMedium,
-            color = TvCyan,
-          )
-        }
-      }
+  val borderColor =
+    when {
+      isActive -> TvEmerald
+      isBeingEdited -> TvCyan
+      else -> TvOutline
     }
-    testStatus is TestStatus.Ok -> {
-      Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = TvEmerald.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, TvEmerald.copy(alpha = 0.6f)),
-        modifier = modifier,
-      ) {
-        Row(
-          modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-          Icon(
-            imageVector = Icons.Rounded.CheckCircle,
-            contentDescription = "Connected",
-            tint = TvEmerald,
-            modifier = Modifier.size(24.dp),
-          )
-          Text(
-            text = testStatus.message,
-            style = MaterialTheme.typography.bodyMedium,
-            color = TvEmerald,
-            modifier = Modifier.testTag("test_result_text"),
-          )
-        }
-      }
+  val bgColor =
+    when {
+      isActive -> TvEmerald.copy(alpha = 0.09f)
+      isBeingEdited -> TvSurfaceFocus
+      else -> TvSurfaceElevated
     }
-    testStatus is TestStatus.Warning -> {
-      Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = TvAmber.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, TvAmber.copy(alpha = 0.6f)),
-        modifier = modifier,
-      ) {
-        Row(
-          modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-          Icon(
-            imageVector = Icons.Rounded.Warning,
-            contentDescription = "Warning",
-            tint = TvAmber,
-            modifier = Modifier.size(24.dp),
-          )
-          Text(
-            text = testStatus.message,
-            style = MaterialTheme.typography.bodyMedium,
-            color = TvAmber,
-            modifier = Modifier.testTag("test_result_text"),
-          )
-        }
-      }
-    }
-    testStatus is TestStatus.Error -> {
-      Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = TvCoral.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, TvCoral.copy(alpha = 0.6f)),
-        modifier = modifier,
-      ) {
-        Row(
-          modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-          Icon(
-            imageVector = Icons.Rounded.Warning,
-            contentDescription = "Error",
-            tint = TvCoral,
-            modifier = Modifier.size(24.dp),
-          )
-          Text(
-            text = testStatus.message,
-            style = MaterialTheme.typography.bodyMedium,
-            color = TvCoral,
-            modifier = Modifier.testTag("test_result_text"),
-          )
-        }
-      }
-    }
-    cachedOkMessage != null -> {
-      Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = TvEmerald.copy(alpha = 0.10f),
-        border = BorderStroke(1.dp, TvEmerald.copy(alpha = 0.45f)),
-        modifier = modifier,
-      ) {
-        Row(
-          modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-          Icon(
-            imageVector = Icons.Rounded.CheckCircle,
-            contentDescription = "Active",
-            tint = TvEmerald,
-            modifier = Modifier.size(22.dp),
-          )
-          Text(
-            text = cachedOkMessage,
-            style = MaterialTheme.typography.bodyMedium,
-            color = TvEmerald,
-            modifier = Modifier.testTag("test_result_text"),
-          )
-        }
-      }
-    }
-  }
-}
 
-@Composable
-private fun TvSwitchRow(
-  checked: Boolean,
-  onCheckedChange: (Boolean) -> Unit,
-  title: String,
-  subtitle: String,
-  modifier: Modifier = Modifier,
-) {
-  TvFocusableCard(
-    onClick = { onCheckedChange(!checked) },
-    isSelected = checked,
-    modifier = modifier.fillMaxWidth(),
-  ) {
-    Row(
-      modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-      Column(
-        modifier = Modifier.weight(1f),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-      ) {
-        Text(
-          text = title,
-          style = MaterialTheme.typography.titleMedium,
-          color = TvTextPrimary,
-        )
-        Text(
-          text = subtitle,
-          style = MaterialTheme.typography.bodyMedium,
-          color = TvTextSecondary,
-        )
-      }
-      Switch(
-        checked = checked,
-        onCheckedChange = null,
-        colors =
-          SwitchDefaults.colors(
-            checkedThumbColor = TvBackground,
-            checkedTrackColor = TvCyan,
-            uncheckedThumbColor = TvTextSecondary,
-            uncheckedTrackColor = TvSurface,
-          ),
-      )
-    }
-  }
-}
+  val modelLabel = if (profile.useCustomModel) profile.modelName else "whisper-1"
+  val liveLabel = if (profile.liveTranscription) "Live" else "Batch"
+  val summaryLine = "$modelLabel • ${profile.targetLabel} • $liveLabel"
 
-@Composable
-private fun TvCheckboxRow(
-  checked: Boolean,
-  onCheckedChange: (Boolean) -> Unit,
-  title: String,
-  subtitle: String,
-  modifier: Modifier = Modifier,
-) {
-  TvFocusableCard(
-    onClick = { onCheckedChange(!checked) },
-    isSelected = checked,
-    modifier = modifier.fillMaxWidth(),
-  ) {
-    Row(
-      modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-      Checkbox(
-        checked = checked,
-        onCheckedChange = null,
-        colors =
-          CheckboxDefaults.colors(
-            checkedColor = TvCyan,
-            uncheckedColor = TvTextSecondary,
-            checkmarkColor = TvBackground,
-          ),
-      )
-      Column(
-        modifier = Modifier.weight(1f),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-      ) {
-        Text(
-          text = title,
-          style = MaterialTheme.typography.titleMedium,
-          color = TvTextPrimary,
-        )
-        Text(
-          text = subtitle,
-          style = MaterialTheme.typography.bodyMedium,
-          color = TvTextSecondary,
-        )
-      }
-    }
-  }
-}
-
-@Composable
-private fun EndpointTextField(
-  value: String,
-  onValueChange: (String) -> Unit,
-  onDone: () -> Unit,
-  modifier: Modifier = Modifier,
-) {
-  OutlinedTextField(
-    value = value,
-    onValueChange = onValueChange,
-    singleLine = true,
-    textStyle = MaterialTheme.typography.bodyLarge.copy(color = TvTextPrimary),
-    placeholder = {
-      Text(
-        text = "10.3.3.20:8000 or https://…",
-        style = MaterialTheme.typography.bodyMedium,
-        color = TvTextSecondary.copy(alpha = 0.7f),
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-      )
-    },
-    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-    keyboardActions = KeyboardActions(onDone = { onDone() }),
-    shape = RoundedCornerShape(14.dp),
-    colors =
-      OutlinedTextFieldDefaults.colors(
-        focusedContainerColor = TvSurfaceFocus,
-        unfocusedContainerColor = TvSurfaceElevated,
-        focusedBorderColor = TvCyan,
-        unfocusedBorderColor = TvOutline,
-        cursorColor = TvCyan,
-      ),
-    modifier = modifier,
-  )
-}
-
-@Composable
-private fun TestEndpointButton(
-  isTesting: Boolean,
-  onClick: () -> Unit,
-  modifier: Modifier = Modifier,
-) {
-  TvPrimaryButton(
-    onClick = onClick,
-    enabled = !isTesting,
-    modifier = modifier,
-  ) {
-    if (isTesting) {
-      CircularProgressIndicator(
-        color = TvBackground,
-        strokeWidth = 3.dp,
-        modifier = Modifier.size(20.dp),
-      )
-      Spacer(modifier = Modifier.width(8.dp))
-      Text("Testing…", style = MaterialTheme.typography.titleMedium, maxLines = 1)
-    } else {
-      Text(
-        "Test Connection",
-        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-        maxLines = 1,
-      )
-    }
-  }
-}
-
-@Composable
-private fun SettingsSectionCard(
-  title: String,
-  cardPadding: Dp,
-  content: @Composable () -> Unit,
-) {
   Surface(
-    shape = RoundedCornerShape(20.dp),
-    color = TvSurface,
-    border = BorderStroke(1.dp, TvOutline),
-    modifier = Modifier.fillMaxWidth(),
+    shape = RoundedCornerShape(16.dp),
+    color = bgColor,
+    border = BorderStroke(if (isActive || isBeingEdited) 2.dp else 1.dp, borderColor),
+    modifier = Modifier.fillMaxWidth().testTag("profile_row_${profile.id}"),
   ) {
-    Column(
-      modifier = Modifier.padding(cardPadding),
-      verticalArrangement = Arrangement.spacedBy(14.dp),
+    Row(
+      modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-      Text(
-        text = title,
-        style = MaterialTheme.typography.titleLarge,
-        color = TvCyan,
-      )
-      content()
+      Column(
+        modifier = Modifier.weight(1f),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+      ) {
+        FlowRow(
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+          Text(
+            text = profile.displayName,
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+            color = TvTextPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.align(Alignment.CenterVertically),
+          )
+          val badgeBg: androidx.compose.ui.graphics.Color
+          val badgeBorder: androidx.compose.ui.graphics.Color
+          val badgeFg: androidx.compose.ui.graphics.Color
+          val badgeText: String
+          when {
+            isActive -> {
+              badgeBg = TvEmerald.copy(alpha = 0.16f)
+              badgeBorder = TvEmerald.copy(alpha = 0.65f)
+              badgeFg = TvEmerald
+              badgeText = "Active"
+            }
+            profile.isMissingRequiredApiKey -> {
+              badgeBg = TvCoral.copy(alpha = 0.16f)
+              badgeBorder = TvCoral.copy(alpha = 0.65f)
+              badgeFg = TvCoral
+              badgeText = "API key needed"
+            }
+            else -> {
+              badgeBg = TvSurface
+              badgeBorder = TvOutline
+              badgeFg = TvTextSecondary
+              badgeText = "Inactive"
+            }
+          }
+          Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = badgeBg,
+            border = BorderStroke(1.dp, badgeBorder),
+            modifier = Modifier.align(Alignment.CenterVertically),
+          ) {
+            Text(
+              text = badgeText,
+              style = MaterialTheme.typography.labelMedium,
+              color = badgeFg,
+              maxLines = 1,
+              modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+            )
+          }
+        }
+        Text(
+          text = summaryLine,
+          style = MaterialTheme.typography.bodyMedium,
+          color = TvTextSecondary,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+      }
+
+      Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        TvIconActionButton(
+          icon = if (isActive) Icons.Rounded.CheckCircle else Icons.Rounded.PlayArrow,
+          contentDescription =
+            if (isActive) "Active: ${profile.displayName}" else "Activate ${profile.displayName}",
+          tint = if (isActive) TvEmerald else TvCyan,
+          isHighlighted = isActive,
+          onClick = onActivate,
+          modifier = Modifier.testTag("activate_profile_${profile.id}"),
+        )
+        TvIconActionButton(
+          icon = Icons.Rounded.Edit,
+          contentDescription = "Edit ${profile.displayName}",
+          tint = TvTextPrimary,
+          isHighlighted = isBeingEdited,
+          onClick = onEdit,
+          modifier = Modifier.testTag("edit_profile_${profile.id}"),
+        )
+        TvIconActionButton(
+          icon = Icons.Rounded.Delete,
+          contentDescription = "Delete ${profile.displayName}",
+          tint = TvCoral,
+          onClick = onDelete,
+          modifier = Modifier.testTag("delete_profile_${profile.id}"),
+        )
+      }
     }
   }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun TargetAppRow(
-  app: InstalledTvApp,
-  isSelected: Boolean,
-  handoffStatus: AppHandoffStatus,
+private fun ConfigurationEditorCard(
+  draft: EndpointProfile,
+  isNew: Boolean,
+  testStatus: TestStatus,
+  availableModels: List<String>,
+  isFetchingModels: Boolean,
+  installedApps: List<InstalledTvApp>,
+  isLoadingApps: Boolean,
+  handoffStatuses: Map<String, com.example.data.AppHandoffStatus>,
+  pendingVerificationApp: InstalledTvApp?,
   isCompact: Boolean,
-  onClick: () -> Unit,
-  onTestSearch: () -> Unit,
-  onToggleNeverUse: () -> Unit,
+  cardPad: Dp,
+  onProfileNameChange: (String) -> Unit,
+  onEndpointChange: (String) -> Unit,
+  onToggleIpOverride: (Boolean) -> Unit,
+  onOverrideIpChange: (String) -> Unit,
+  onToggleIgnoreSsl: (Boolean) -> Unit,
+  onToggleApiKeyNotNeeded: (Boolean) -> Unit,
+  onApiKeyChange: (String) -> Unit,
+  onTestEndpoint: () -> Unit,
+  onToggleCustomModel: (Boolean) -> Unit,
+  onRefreshModels: () -> Unit,
+  onModelNameChange: (String) -> Unit,
+  onToggleLiveTranscription: (Boolean) -> Unit,
+  onToggleSearchInCurrentApp: (Boolean) -> Unit,
+  onSelectTargetApp: (InstalledTvApp) -> Unit,
+  onTestAppSearch: (InstalledTvApp) -> Unit,
+  onConfirmAppTest: (Boolean) -> Unit,
+  onDismissPendingVerification: () -> Unit,
+  onToggleNeverUseApp: (InstalledTvApp) -> Unit,
+  onSelectLanguage: (LanguageOption) -> Unit,
+  onSelectMicSource: (MicSource) -> Unit,
+  onSaveDone: () -> Unit,
+  onCancel: () -> Unit,
 ) {
-  val supported = app.handoffMethod != HandoffMethod.NOT_SUPPORTED
-  val isBlocked = handoffStatus == AppHandoffStatus.NOT_WORKING
+  val testPassed = testStatus is TestStatus.Ok || draft.hasValidCachedEndpoint
+  val title =
+    if (isNew) "2. New Configuration — What is your transcription endpoint?"
+    else "2. Edit Configuration: ${draft.displayName}"
 
-  Column(
-    modifier = Modifier.fillMaxWidth(),
-    verticalArrangement = Arrangement.spacedBy(8.dp),
+  SettingsSectionCard(
+    title = title,
+    cardPadding = cardPad,
+    modifier = Modifier.testTag("profile_editor_card"),
   ) {
-    TvFocusableCard(
-      onClick = onClick,
-      enabled = supported && !isBlocked,
-      isSelected = isSelected,
-      modifier = Modifier.fillMaxWidth().testTag("app_item_${app.packageName}"),
-    ) {
-      Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    Text(
+      text = "Configuration name (optional — auto-uses host or IP if blank)",
+      style = MaterialTheme.typography.bodyMedium,
+      color = TvTextSecondary,
+    )
+    TvOutlinedInput(
+      value = draft.customName,
+      onValueChange = onProfileNameChange,
+      placeholderText = "Auto: ${draft.displayName}",
+      modifier = Modifier.fillMaxWidth().testTag("profile_name_input"),
+    )
+
+    Text(
+      text = "Transcription endpoint (host, URL, or full path)",
+      style = MaterialTheme.typography.bodyMedium,
+      color = TvTextSecondary,
+    )
+    TvOutlinedInput(
+      value = draft.endpointInput,
+      onValueChange = onEndpointChange,
+      placeholderText = "10.3.3.20:8000 or https://…",
+      onDone = onTestEndpoint,
+      modifier = Modifier.fillMaxWidth().testTag("endpoint_input"),
+    )
+
+    TvCheckboxRow(
+      checked = draft.useIpOverride,
+      onCheckedChange = onToggleIpOverride,
+      title = "Override server IP address",
+      subtitle =
+        "Connect directly to this IP (LAN / Tailscale) while keeping the hostname and Host/SNI headers",
+      modifier = Modifier.testTag("use_ip_override_checkbox"),
+    )
+
+    AnimatedVisibility(visible = draft.useIpOverride) {
+      Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
       ) {
-        val bmp = app.iconBitmap
-        if (bmp != null) {
-          Image(
-            bitmap = bmp.asImageBitmap(),
-            contentDescription = app.label,
-            modifier = Modifier.size(40.dp),
-          )
-        } else {
-          Icon(
-            painter = painterResource(id = R.drawable.ic_tv),
-            contentDescription = app.label,
-            tint = TvCyan,
-            modifier = Modifier.size(40.dp),
-          )
+        Text(
+          text = "Server IP address (IP only, no port or path)",
+          style = MaterialTheme.typography.bodyMedium,
+          color = TvTextSecondary,
+        )
+        TvOutlinedInput(
+          value = draft.overrideIp,
+          onValueChange = onOverrideIpChange,
+          placeholderText = "e.g. 10.3.3.20 or 100.64.1.5",
+          onDone = onTestEndpoint,
+          modifier = Modifier.fillMaxWidth().testTag("override_ip_input"),
+        )
+      }
+    }
+
+    TvCheckboxRow(
+      checked = draft.ignoreSsl,
+      onCheckedChange = onToggleIgnoreSsl,
+      title = "Ignore SSL certificate checks",
+      subtitle = "Allow self-signed or private-CA HTTPS certificates on local/Tailscale servers",
+      modifier = Modifier.testTag("use_ignore_ssl_checkbox"),
+    )
+
+    // API key input + "API key not needed" checkbox
+    AnimatedVisibility(visible = !draft.apiKeyNotNeeded) {
+      Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        Text(
+          text = "API key (sent as Authorization: Bearer)",
+          style = MaterialTheme.typography.bodyMedium,
+          color = if (draft.apiKey.isBlank()) TvAmber else TvTextSecondary,
+        )
+        TvOutlinedInput(
+          value = draft.apiKey,
+          onValueChange = onApiKeyChange,
+          placeholderText = "Missing API key (nvapi-… or sk-…)",
+          visualTransformation = PasswordVisualTransformation(),
+          onDone = onTestEndpoint,
+          modifier = Modifier.fillMaxWidth().testTag("api_key_input"),
+        )
+      }
+    }
+
+    TvCheckboxRow(
+      checked = draft.apiKeyNotNeeded,
+      onCheckedChange = onToggleApiKeyNotNeeded,
+      title = "API key not needed",
+      subtitle = "Allow activating and calling this endpoint without an API key",
+      modifier = Modifier.testTag("api_key_not_needed_checkbox"),
+    )
+
+    // Test Connection bar
+    val cachedLabel =
+      if (draft.hasValidCachedEndpoint && testStatus == TestStatus.Idle) {
+        val viaIp =
+          if (draft.useIpOverride && draft.overrideIp.isNotBlank()) " (via ${draft.overrideIp.trim()})"
+          else ""
+        "Ready: ${draft.detectedEndpointUrl}$viaIp"
+      } else {
+        null
+      }
+
+    if (isCompact) {
+      Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        TestEndpointButton(
+          isTesting = testStatus == TestStatus.Testing,
+          onClick = onTestEndpoint,
+          modifier = Modifier.fillMaxWidth().testTag("test_endpoint_button"),
+        )
+        EndpointStatusBadge(testStatus = testStatus, cachedOkMessage = cachedLabel, modifier = Modifier.fillMaxWidth())
+      }
+    } else {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        TestEndpointButton(
+          isTesting = testStatus == TestStatus.Testing,
+          onClick = onTestEndpoint,
+          modifier = Modifier.testTag("test_endpoint_button"),
+        )
+        EndpointStatusBadge(testStatus = testStatus, cachedOkMessage = cachedLabel, modifier = Modifier.weight(1f))
+      }
+    }
+
+    // Model & live streaming options
+    AnimatedVisibility(visible = testPassed || draft.useCustomModel || draft.liveTranscription) {
+      Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        TvCheckboxRow(
+          checked = draft.useCustomModel,
+          onCheckedChange = onToggleCustomModel,
+          title = "Pick custom model / endpoint",
+          subtitle =
+            if (availableModels.isNotEmpty()) {
+              "Discovered ${availableModels.size} speech/OpenAI model(s)"
+            } else {
+              "Query OpenAI /v1/models or specify a model ID (e.g. nvidia/parakeet-tdt-0.6b-v3)"
+            },
+          modifier = Modifier.testTag("use_custom_model_checkbox"),
+        )
+
+        AnimatedVisibility(visible = draft.useCustomModel) {
+          Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Text(
+                text =
+                  when {
+                    isFetchingModels -> "Querying /v1/models…"
+                    availableModels.isNotEmpty() -> "Server speech models:"
+                    else -> "Model ID (sent to transcription endpoint):"
+                  },
+                style = MaterialTheme.typography.bodyMedium,
+                color = TvTextSecondary,
+                modifier = Modifier.weight(1f),
+              )
+              TvSecondaryButton(
+                onClick = onRefreshModels,
+                enabled = !isFetchingModels,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                modifier = Modifier.testTag("refresh_models_button"),
+              ) {
+                Icon(
+                  imageVector = Icons.Rounded.Refresh,
+                  contentDescription = "Query OpenAI models",
+                  tint = TvCyan,
+                  modifier = Modifier.size(18.dp),
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Query", style = MaterialTheme.typography.labelLarge, maxLines = 1)
+              }
+            }
+
+            if (availableModels.isNotEmpty()) {
+              FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                availableModels.forEach { modelId ->
+                  val selected = draft.modelName == modelId
+                  TvSecondaryButton(
+                    onClick = { onModelNameChange(modelId) },
+                    isSelected = selected,
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                    modifier = Modifier.testTag("model_chip_$modelId"),
+                  ) {
+                    if (selected) {
+                      Icon(
+                        imageVector = Icons.Rounded.Check,
+                        contentDescription = null,
+                        tint = TvCyan,
+                        modifier = Modifier.size(18.dp),
+                      )
+                      Spacer(modifier = Modifier.width(6.dp))
+                    }
+                    Text(
+                      text = modelId,
+                      style = MaterialTheme.typography.bodyMedium,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                    )
+                  }
+                }
+              }
+            }
+
+            TvOutlinedInput(
+              value = draft.modelName,
+              onValueChange = onModelNameChange,
+              placeholderText = "whisper-1",
+              modifier = Modifier.fillMaxWidth().testTag("model_input"),
+            )
+          }
         }
 
+        TvCheckboxRow(
+          checked = draft.liveTranscription,
+          onCheckedChange = onToggleLiveTranscription,
+          title = "Live transcription (show dictation as you speak)",
+          subtitle = "Streams SSE deltas or progressive audio chunks into the search bar live",
+          modifier = Modifier.testTag("live_transcription_checkbox"),
+        )
+      }
+    }
+
+    HorizontalDivider(color = TvOutline, thickness = 1.dp)
+
+    // Default Target App & Current-App Search belonging to this Configuration Set
+    Text(
+      text = "Target App & Search Routing (for this configuration)",
+      style = MaterialTheme.typography.titleMedium,
+      color = TvCyan,
+    )
+    TargetAppControlsBlock(
+      searchInCurrentApp = draft.searchInCurrentApp,
+      installedApps = installedApps,
+      isLoadingApps = isLoadingApps,
+      selectedTargetPackage = draft.targetPackage,
+      handoffStatuses = handoffStatuses,
+      pendingVerificationApp = pendingVerificationApp,
+      isCompact = isCompact,
+      onToggleSearchInCurrentApp = onToggleSearchInCurrentApp,
+      onSelectTargetApp = onSelectTargetApp,
+      onTestAppSearch = onTestAppSearch,
+      onConfirmAppTest = onConfirmAppTest,
+      onDismissPendingVerification = onDismissPendingVerification,
+      onToggleNeverUseApp = onToggleNeverUseApp,
+    )
+
+    HorizontalDivider(color = TvOutline, thickness = 1.dp)
+
+    // Language & Mic Source belonging to this Configuration Set
+    Text(
+      text = "Language (sent only when not Auto)",
+      style = MaterialTheme.typography.titleMedium,
+      color = TvCyan,
+    )
+    FlowRow(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(10.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+      LanguageOption.entries.forEach { option ->
+        val selected = draft.language == option
+        TvSecondaryButton(
+          onClick = { onSelectLanguage(option) },
+          isSelected = selected,
+          modifier = Modifier.testTag("lang_${option.name.lowercase()}"),
+        ) {
+          if (selected) {
+            Icon(
+              imageVector = Icons.Rounded.Check,
+              contentDescription = null,
+              tint = TvCyan,
+              modifier = Modifier.size(20.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+          }
+          Text(text = option.label, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+        }
+      }
+    }
+
+    Text(
+      text = "Microphone Source",
+      style = MaterialTheme.typography.titleMedium,
+      color = TvCyan,
+    )
+    FlowRow(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(10.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+      MicSource.entries.forEach { source ->
+        val selected = draft.micSource == source
+        TvSecondaryButton(
+          onClick = { onSelectMicSource(source) },
+          isSelected = selected,
+        ) {
+          Text(text = source.label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+        }
+      }
+    }
+
+    HorizontalDivider(color = TvOutline, thickness = 1.dp)
+
+    // Done & Cancel row (Done works with or without running Test Connection!)
+    FlowRow(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(12.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+      TvPrimaryButton(
+        onClick = onSaveDone,
+        modifier = Modifier.testTag("profile_done_button"),
+      ) {
+        Icon(imageVector = Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(20.dp))
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+          text = "Done",
+          style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+          maxLines = 1,
+        )
+      }
+
+      TvSecondaryButton(
+        onClick = onCancel,
+        modifier = Modifier.testTag("profile_cancel_button"),
+      ) {
+        Text("Cancel", style = MaterialTheme.typography.titleMedium, maxLines = 1)
+      }
+    }
+  }
+}
+
+@Composable
+private fun TargetAppSectionCard(
+  title: String,
+  searchInCurrentApp: Boolean,
+  installedApps: List<InstalledTvApp>,
+  isLoadingApps: Boolean,
+  selectedTargetPackage: String,
+  handoffStatuses: Map<String, com.example.data.AppHandoffStatus>,
+  pendingVerificationApp: InstalledTvApp?,
+  isCompact: Boolean,
+  cardPad: Dp,
+  onToggleSearchInCurrentApp: (Boolean) -> Unit,
+  onSelectTargetApp: (InstalledTvApp) -> Unit,
+  onTestAppSearch: (InstalledTvApp) -> Unit,
+  onConfirmAppTest: (Boolean) -> Unit,
+  onDismissPendingVerification: () -> Unit,
+  onToggleNeverUseApp: (InstalledTvApp) -> Unit,
+) {
+  SettingsSectionCard(title = title, cardPadding = cardPad) {
+    TargetAppControlsBlock(
+      searchInCurrentApp = searchInCurrentApp,
+      installedApps = installedApps,
+      isLoadingApps = isLoadingApps,
+      selectedTargetPackage = selectedTargetPackage,
+      handoffStatuses = handoffStatuses,
+      pendingVerificationApp = pendingVerificationApp,
+      isCompact = isCompact,
+      onToggleSearchInCurrentApp = onToggleSearchInCurrentApp,
+      onSelectTargetApp = onSelectTargetApp,
+      onTestAppSearch = onTestAppSearch,
+      onConfirmAppTest = onConfirmAppTest,
+      onDismissPendingVerification = onDismissPendingVerification,
+      onToggleNeverUseApp = onToggleNeverUseApp,
+    )
+  }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun TargetAppControlsBlock(
+  searchInCurrentApp: Boolean,
+  installedApps: List<InstalledTvApp>,
+  isLoadingApps: Boolean,
+  selectedTargetPackage: String,
+  handoffStatuses: Map<String, com.example.data.AppHandoffStatus>,
+  pendingVerificationApp: InstalledTvApp?,
+  isCompact: Boolean,
+  onToggleSearchInCurrentApp: (Boolean) -> Unit,
+  onSelectTargetApp: (InstalledTvApp) -> Unit,
+  onTestAppSearch: (InstalledTvApp) -> Unit,
+  onConfirmAppTest: (Boolean) -> Unit,
+  onDismissPendingVerification: () -> Unit,
+  onToggleNeverUseApp: (InstalledTvApp) -> Unit,
+) {
+  TvSwitchRow(
+    checked = searchInCurrentApp,
+    onCheckedChange = onToggleSearchInCurrentApp,
+    title = "Search in the current app",
+    subtitle =
+      "Send voice queries to the active app when it supports search; otherwise fall back to the default app below",
+    modifier = Modifier.testTag("search_current_app_switch"),
+  )
+
+  AnimatedVisibility(visible = pendingVerificationApp != null) {
+    pendingVerificationApp?.let { pendingApp ->
+      Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = TvSurfaceFocus,
+        border = BorderStroke(1.5.dp, TvCyan),
+        modifier = Modifier.fillMaxWidth().testTag("pending_verification_banner"),
+      ) {
         Column(
-          modifier = Modifier.weight(1f),
-          verticalArrangement = Arrangement.spacedBy(4.dp),
+          modifier = Modifier.fillMaxWidth().padding(14.dp),
+          verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
           Text(
-            text = app.label,
+            text = "Did search results appear in ${pendingApp.label}?",
             style = MaterialTheme.typography.titleMedium,
             color = TvTextPrimary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
           )
-          Text(
-            text = app.packageName,
-            style = MaterialTheme.typography.bodyMedium,
-            color = TvTextSecondary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-          )
-          if (isCompact) {
-            FlowRow(
-              horizontalArrangement = Arrangement.spacedBy(8.dp),
-              verticalArrangement = Arrangement.spacedBy(6.dp),
+          FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+          ) {
+            TvPrimaryButton(
+              onClick = { onConfirmAppTest(true) },
+              contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+              modifier = Modifier.testTag("confirm_app_works_button"),
             ) {
-              HandoffBadge(method = app.handoffMethod, supported = supported)
-              VerificationBadge(status = handoffStatus)
+              Icon(imageVector = Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+              Spacer(modifier = Modifier.width(6.dp))
+              Text("Yes, worked", style = MaterialTheme.typography.labelLarge, maxLines = 1)
+            }
+            TvSecondaryButton(
+              onClick = { onConfirmAppTest(false) },
+              contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+              modifier = Modifier.testTag("confirm_app_broken_button"),
+            ) {
+              Text("No, not working", style = MaterialTheme.typography.labelLarge, maxLines = 1)
+            }
+            TvSecondaryButton(
+              onClick = onDismissPendingVerification,
+              contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+              modifier = Modifier.testTag("dismiss_app_verify_button"),
+            ) {
+              Text("Cancel", style = MaterialTheme.typography.labelLarge, maxLines = 1)
             }
           }
         }
-
-        if (!isCompact) {
-          Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-          ) {
-            HandoffBadge(method = app.handoffMethod, supported = supported)
-            VerificationBadge(status = handoffStatus)
-          }
-        }
-
-        if (isSelected) {
-          Icon(
-            imageVector = Icons.Rounded.Check,
-            contentDescription = "Selected",
-            tint = TvEmerald,
-            modifier = Modifier.size(26.dp),
-          )
-        }
-      }
-    }
-
-    if (supported || isBlocked) {
-      FlowRow(
-        modifier = Modifier.fillMaxWidth().padding(start = 10.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-      ) {
-        TvSecondaryButton(
-          onClick = onTestSearch,
-          enabled = supported && !isBlocked,
-          contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-          modifier = Modifier.testTag("test_app_${app.packageName}"),
-        ) {
-          Text("Test search", style = MaterialTheme.typography.labelLarge, maxLines = 1)
-        }
-
-        TvSecondaryButton(
-          onClick = onToggleNeverUse,
-          isSelected = isBlocked,
-          contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-          modifier = Modifier.testTag("block_app_${app.packageName}"),
-        ) {
-          Text(
-            text = if (isBlocked) "Allow app" else "Never use this app",
-            style = MaterialTheme.typography.labelLarge,
-            maxLines = 1,
-          )
-        }
       }
     }
   }
-}
 
-@Composable
-private fun HandoffBadge(method: HandoffMethod, supported: Boolean) {
-  Surface(
-    shape = RoundedCornerShape(10.dp),
-    color = if (supported) TvSurface else TvCoral.copy(alpha = 0.2f),
-    border = BorderStroke(1.dp, if (supported) TvOutline else TvCoral),
-  ) {
-    Text(
-      text = method.label,
-      style = MaterialTheme.typography.labelMedium,
-      color = if (supported) TvCyan else TvCoral,
-      maxLines = 1,
-      modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-    )
-  }
-}
+  Text(
+    text = "Default target app (used on Home or when current app does not support search):",
+    style = MaterialTheme.typography.bodyMedium,
+    color = TvTextSecondary,
+  )
 
-@Composable
-private fun VerificationBadge(status: AppHandoffStatus) {
-  val (bg, border, fg) =
-    when (status) {
-      AppHandoffStatus.CONFIRMED ->
-        Triple(TvEmerald.copy(alpha = 0.16f), TvEmerald.copy(alpha = 0.6f), TvEmerald)
-      AppHandoffStatus.NOT_WORKING ->
-        Triple(TvCoral.copy(alpha = 0.16f), TvCoral.copy(alpha = 0.6f), TvCoral)
-      AppHandoffStatus.UNKNOWN -> Triple(TvSurface, TvOutline, TvTextSecondary)
-    }
-
-  Surface(
-    shape = RoundedCornerShape(10.dp),
-    color = bg,
-    border = BorderStroke(1.dp, border),
-  ) {
-    Text(
-      text = status.label,
-      style = MaterialTheme.typography.labelMedium,
-      color = fg,
-      maxLines = 1,
-      modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-    )
-  }
-}
-
-@Composable
-private fun RoleStatusRow(label: String, active: Boolean, detail: String) {
-  Row(
-    modifier = Modifier.fillMaxWidth(),
-    verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(12.dp),
-  ) {
-    Icon(
-      imageVector = if (active) Icons.Rounded.CheckCircle else Icons.Rounded.Warning,
-      contentDescription = null,
-      tint = if (active) TvEmerald else TvAmber,
-      modifier = Modifier.size(24.dp),
-    )
-    Column(modifier = Modifier.weight(1f)) {
-      Text(
-        text = label,
-        style = MaterialTheme.typography.titleMedium,
-        color = TvTextPrimary,
-      )
-      Text(
-        text = detail,
-        style = MaterialTheme.typography.bodyMedium,
-        color = if (active) TvEmerald else TvTextSecondary,
-      )
-    }
-  }
-}
-
-@Composable
-private fun AdbCommandBox(
-  title: String,
-  commands: String,
-  onCopy: () -> Unit,
-) {
-  Surface(
-    shape = RoundedCornerShape(14.dp),
-    color = TvBackground,
-    border = BorderStroke(1.dp, TvOutline),
-    modifier = Modifier.fillMaxWidth(),
-  ) {
-    Column(
-      modifier = Modifier.padding(14.dp),
-      verticalArrangement = Arrangement.spacedBy(10.dp),
+  if (isLoadingApps && installedApps.isEmpty()) {
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        Text(
-          text = title,
-          style = MaterialTheme.typography.labelLarge,
-          color = TvTextSecondary,
-          modifier = Modifier.weight(1f),
+      CircularProgressIndicator(color = TvCyan, strokeWidth = 3.dp, modifier = Modifier.size(24.dp))
+      Text("Scanning installed TV apps…", style = MaterialTheme.typography.bodyMedium, color = TvTextSecondary)
+    }
+  } else if (installedApps.isEmpty()) {
+    Text("No installed TV apps found.", style = MaterialTheme.typography.bodyMedium, color = TvAmber)
+  } else {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+      installedApps.forEach { app ->
+        TargetAppRow(
+          app = app,
+          isSelected = app.packageName == selectedTargetPackage,
+          handoffStatus = handoffStatuses[app.packageName] ?: com.example.data.AppHandoffStatus.UNKNOWN,
+          isCompact = isCompact,
+          onClick = { onSelectTargetApp(app) },
+          onTestSearch = { onTestAppSearch(app) },
+          onToggleNeverUse = { onToggleNeverUseApp(app) },
         )
-        Spacer(modifier = Modifier.width(8.dp))
-        TvSecondaryButton(
-          onClick = onCopy,
-          contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-        ) {
-          Icon(
-            painter = painterResource(id = R.drawable.ic_copy),
-            contentDescription = "Copy",
-            tint = TvCyan,
-            modifier = Modifier.size(18.dp),
-          )
-          Spacer(modifier = Modifier.width(6.dp))
-          Text("Copy", style = MaterialTheme.typography.labelLarge, maxLines = 1)
-        }
       }
-
-      Text(
-        text = commands,
-        style =
-          MaterialTheme.typography.bodyMedium.copy(
-            fontFamily = FontFamily.Monospace,
-            fontSize = 18.sp,
-            lineHeight = 26.sp,
-          ),
-        color = TvTextPrimary,
-        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-      )
     }
   }
 }

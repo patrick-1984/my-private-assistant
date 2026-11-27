@@ -59,13 +59,18 @@ class EndpointClientTest {
       readTimeoutMs: Int,
       tlsServerName: String?,
       ignoreSsl: Boolean,
+      onSseLine: ((String) -> Unit)?,
     ): HttpResponseData {
       calledUrls.add(urlString)
       lastHeaders = headers
       lastTlsServerName = tlsServerName
       lastIgnoreSsl = ignoreSsl
       lastFields = fields
-      return handler(urlString, headers, fileFieldName, fields, tlsServerName)
+      val resp = handler(urlString, headers, fileFieldName, fields, tlsServerName)
+      if (resp.statusCode in 200..299 && onSseLine != null && resp.body.contains("data:")) {
+        resp.body.lineSequence().forEach { onSseLine(it) }
+      }
+      return resp
     }
 
     override fun getJson(
@@ -424,4 +429,102 @@ class EndpointClientTest {
     client.transcribe(WavEncoder.silentWav(100), base.copy(useCustomModel = true), { _, _ -> }, {})
     assertEquals("Systran/faster-whisper-large-v3", transport.lastFields["model"])
   }
+
+  @Test
+  fun `nvidia catalog filters to speech models and works with nvidia parakeet and SSE streaming`() =
+    runTest {
+      val nvidiaBody =
+        """{"data":[{"id":"meta/llama-3.1-70b-instruct"},{"id":"mistralai/mixtral-8x7b"},{"id":"nvidia/parakeet-tdt-0.6b-v3"},{"id":"openai/whisper-large-v3"},{"id":"nvidia/canary-1b"}]}"""
+      val transport =
+        FakeTransport(
+          getHandler = { url, headers, _, _ ->
+            if (
+              url == "https://integrate.api.nvidia.com/v1/models" &&
+                headers["Authorization"] == "Bearer nvapi-secret-key"
+            ) {
+              HttpResponseData(200, nvidiaBody)
+            } else {
+              HttpResponseData(404, "")
+            }
+          },
+          handler = { url, headers, _, fields, _ ->
+            assertEquals("https://integrate.api.nvidia.com/v1/audio/transcriptions", url)
+            assertEquals("Bearer nvapi-secret-key", headers["Authorization"])
+            assertEquals("nvidia/parakeet-tdt-0.6b-v3", fields["model"])
+            if (fields["stream"] == "true") {
+              HttpResponseData(
+                200,
+                """
+                data: {"type":"transcript.text.delta","delta":"polskie "}
+                data: {"type":"transcript.text.delta","delta":"piosenki"}
+                data: {"type":"transcript.text.done","text":"polskie piosenki"}
+                data: [DONE]
+                """.trimIndent(),
+              )
+            } else {
+              HttpResponseData(200, """{"text":"polskie piosenki"}""")
+            }
+          },
+        )
+      val client = EndpointClient(transport)
+      val nvidiaSettings =
+        com.example.data.EndpointProfile.defaultNvidiaProfile()
+          .copy(apiKey = "nvapi-secret-key")
+          .toProbeSettings()
+
+      val probe =
+        client.detectEndpoint(
+          rawInput = nvidiaSettings.endpointInput,
+          apiKey = nvidiaSettings.effectiveApiKey,
+          modelName = nvidiaSettings.effectiveModelName,
+          language = nvidiaSettings.language,
+        )
+      assertTrue(probe is ProbeResult.Success)
+      assertEquals(
+        listOf("nvidia/parakeet-tdt-0.6b-v3", "openai/whisper-large-v3", "nvidia/canary-1b"),
+        (probe as ProbeResult.Success).availableModels,
+      )
+
+      val partials = mutableListOf<String>()
+      val result =
+        client.transcribe(
+          wavBytes = WavEncoder.silentWav(200),
+          settings = nvidiaSettings,
+          onEndpointDetected = { _, _ -> },
+          onEndpointInvalidated = {},
+          onPartialText = { partials.add(it) },
+        )
+      assertTrue(result is TranscribeResult.Success)
+      assertEquals("polskie piosenki", (result as TranscribeResult.Success).text)
+      assertTrue(partials.isNotEmpty())
+      assertEquals("polskie piosenki", partials.last())
+    }
+
+  @Test
+  fun `sse streaming falls back cleanly to standard json if server rejects stream=true`() =
+    runTest {
+      val transport = FakeTransport { _, _, _, fields, _ ->
+        if (fields["stream"] == "true") {
+          HttpResponseData(422, """{"detail":"Extra inputs are not permitted: stream"}""")
+        } else {
+          HttpResponseData(200, """{"text":"fallback worked"}""")
+        }
+      }
+      val client = EndpointClient(transport)
+      val settings =
+        com.example.data.EndpointProfile.defaultNvidiaProfile()
+          .copy(apiKey = "nvapi-test", liveTranscription = true)
+          .toProbeSettings()
+
+      val res =
+        client.transcribe(
+          wavBytes = WavEncoder.silentWav(200),
+          settings = settings,
+          onEndpointDetected = { _, _ -> },
+          onEndpointInvalidated = {},
+          onPartialText = {},
+        )
+      assertTrue(res is TranscribeResult.Success)
+      assertEquals("fallback worked", (res as TranscribeResult.Success).text)
+    }
 }

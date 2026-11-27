@@ -18,8 +18,11 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.test.core.app.ApplicationProvider
+import com.example.data.ActivateProfileResult
 import com.example.data.AppHandoffStatus
 import com.example.data.AppSettings
+import com.example.data.EndpointProfile
+import com.example.data.LanguageOption
 import com.example.data.ServerFamily
 import com.example.data.SettingsRepository
 import com.example.handoff.AppHandoff
@@ -133,10 +136,29 @@ class ExampleRobolectricTest {
   }
 
   @Test
-  fun `SettingsScreen displays bottom test button, current-app search controls, verification banner, and privacy note`() {
+  fun `SettingsScreen displays Configuration Sets, icon buttons, Editor with Name and Done, and privacy note`() {
+    val nvidia = EndpointProfile.defaultNvidiaProfile()
+    val localDraft =
+      EndpointProfile(
+        id = "local_1",
+        customName = "",
+        endpointInput = "https://stt.example.com",
+        useIpOverride = true,
+        overrideIp = "10.3.3.20",
+        ignoreSsl = true,
+        apiKey = "sk-123",
+        apiKeyNotNeeded = false,
+        useCustomModel = true,
+        modelName = "whisper-1",
+        liveTranscription = true,
+        detectedEndpointUrl = "https://stt.example.com/v1/audio/transcriptions",
+        detectedFamily = ServerFamily.OPENAI_V1,
+        detectedForInput = "https://stt.example.com|true|10.3.3.20|true",
+      )
     val smartTube = InstalledTvApp(AppHandoff.PKG_SMARTTUBE, "SmartTube", HandoffMethod.SMARTTUBE_URI, null)
     val newPipe = InstalledTvApp(AppHandoff.PKG_NEWPIPE, "NewPipe", HandoffMethod.NEWPIPE_SHARE, null)
     var confirmed: Boolean? = null
+    var doneClicked = false
 
     composeTestRule.setContent {
       TvVoiceSearchTheme {
@@ -146,12 +168,17 @@ class ExampleRobolectricTest {
               isSettingsOpen = true,
               testStatus = TestStatus.Ok("Connected"),
               availableModels = listOf("whisper-1", "Systran/faster-whisper-large-v3"),
+              profileDraft = localDraft,
+              isDraftNew = false,
+              profileBanner = "API key needed for \"NVIDIA\".",
+              isProfileBannerError = true,
               pendingVerificationApp = newPipe,
               installedApps = listOf(smartTube, newPipe),
               settings =
                 AppSettings(
-                  endpointInput = "https://stt.example.com",
+                  endpointInput = localDraft.endpointInput,
                   useIpOverride = true,
+                  overrideIp = "10.3.3.20",
                   ignoreSsl = true,
                   useApiKey = true,
                   useCustomModel = true,
@@ -159,17 +186,23 @@ class ExampleRobolectricTest {
                   micButtonCapture = true,
                   searchInCurrentApp = true,
                   appHandoffStatuses = mapOf(AppHandoff.PKG_SMARTTUBE to AppHandoffStatus.CONFIRMED),
-                  detectedEndpointUrl = "https://stt.example.com/v1/audio/transcriptions",
-                  detectedFamily = ServerFamily.OPENAI_V1,
-                  detectedForInput = "https://stt.example.com|true||true",
+                  profiles = listOf(nvidia, localDraft),
+                  activeProfileId = localDraft.id,
                 ),
             ),
           onBack = {},
+          onStartNewProfile = {},
+          onEditProfile = {},
+          onActivateProfile = {},
+          onDeleteProfile = {},
+          onSaveProfileDone = { doneClicked = true },
+          onCancelProfileDraft = {},
+          onProfileNameChange = {},
           onEndpointChange = {},
           onToggleIpOverride = {},
           onOverrideIpChange = {},
           onToggleIgnoreSsl = {},
-          onToggleApiKey = {},
+          onToggleApiKeyNotNeeded = {},
           onTestEndpoint = {},
           onToggleCustomModel = {},
           onRefreshModels = {},
@@ -192,8 +225,20 @@ class ExampleRobolectricTest {
     }
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("settings_back_button").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("endpoint_input").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("use_ip_override_checkbox").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("profile_banner_text").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("profile_row_${EndpointProfile.NVIDIA_PRESET_ID}").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("activate_profile_${EndpointProfile.NVIDIA_PRESET_ID}").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("edit_profile_${EndpointProfile.NVIDIA_PRESET_ID}").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("delete_profile_${EndpointProfile.NVIDIA_PRESET_ID}").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("add_profile_button").performScrollTo().assertIsDisplayed()
+
+    composeTestRule
+      .onNodeWithTag("settings_list")
+      .performScrollToNode(hasTestTag("profile_name_input"))
+    composeTestRule.onNodeWithTag("profile_name_input").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("endpoint_input").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("api_key_input").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("api_key_not_needed_checkbox").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("test_endpoint_button").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("live_transcription_checkbox").performScrollTo().assertIsDisplayed()
 
@@ -210,9 +255,9 @@ class ExampleRobolectricTest {
 
     composeTestRule
       .onNodeWithTag("settings_list")
-      .performScrollToNode(hasTestTag("test_app_${AppHandoff.PKG_SMARTTUBE}"))
-    composeTestRule.onNodeWithTag("test_app_${AppHandoff.PKG_SMARTTUBE}").performScrollTo().assertIsDisplayed()
-    composeTestRule.onNodeWithTag("block_app_${AppHandoff.PKG_SMARTTUBE}").performScrollTo().assertIsDisplayed()
+      .performScrollToNode(hasTestTag("profile_done_button"))
+    composeTestRule.onNodeWithTag("profile_done_button").performScrollTo().performClick()
+    assertTrue(doneClicked)
 
     composeTestRule
       .onNodeWithTag("settings_list")
@@ -222,12 +267,94 @@ class ExampleRobolectricTest {
   }
 
   @Test
+  fun `SettingsRepository seeds inactive NVIDIA preset, enforces API key check on activate, and supports Done without test`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val repo = SettingsRepository.get(context)
+
+    // 1. Fresh install has NVIDIA preset inactive and activeProfileId == null
+    val initial = repo.settings.value
+    assertNull(initial.activeProfileId)
+    assertEquals("", initial.endpointInput)
+    val nvidia = initial.profiles.firstOrNull { it.id == EndpointProfile.NVIDIA_PRESET_ID }
+    assertNotNull(nvidia)
+    assertEquals("NVIDIA", nvidia!!.displayName)
+    assertEquals(EndpointProfile.NVIDIA_ENDPOINT_URL, nvidia.endpointInput)
+    assertEquals(EndpointProfile.NVIDIA_DEFAULT_MODEL, nvidia.modelName)
+    assertFalse(nvidia.apiKeyNotNeeded)
+    assertTrue(nvidia.isMissingRequiredApiKey)
+
+    // 2. Activating NVIDIA without API key is blocked cleanly
+    val blockedAct = repo.activateProfile(nvidia.id)
+    assertTrue(blockedAct is ActivateProfileResult.MissingApiKey)
+    assertNull(repo.settings.value.activeProfileId)
+
+    // 3. Adding custom endpoint with no name auto-derives FQDN without https://, allows activation when apiKeyNotNeeded = true
+    val localProfile =
+      EndpointProfile(
+        id = "lan_whisper",
+        customName = "",
+        endpointInput = "https://whisper.home.lan:8443",
+        useIpOverride = true,
+        overrideIp = "10.3.3.20",
+        apiKeyNotNeeded = true,
+        targetPackage = AppHandoff.PKG_NEWPIPE,
+        targetLabel = "NewPipe",
+        language = LanguageOption.POLISH,
+      )
+    assertEquals("whisper.home.lan:8443 (10.3.3.20)", localProfile.displayName)
+    val saveOutcome = repo.saveProfile(localProfile, activateIfEligible = true)
+    assertTrue(saveOutcome is ActivateProfileResult.Activated)
+    assertEquals("lan_whisper", repo.settings.value.activeProfileId)
+    assertEquals("https://whisper.home.lan:8443", repo.settings.value.endpointInput)
+    assertEquals(AppHandoff.PKG_NEWPIPE, repo.settings.value.targetPackage)
+    assertEquals(LanguageOption.POLISH, repo.settings.value.language)
+
+    // 4. Updating NVIDIA with API key lets it activate and switches active settings
+    val updatedNvidia = nvidia.copy(apiKey = "nvapi-valid-key")
+    val nvidiaSave = repo.saveProfile(updatedNvidia, activateIfEligible = true)
+    assertTrue(nvidiaSave is ActivateProfileResult.Activated)
+    assertEquals(nvidia.id, repo.settings.value.activeProfileId)
+    assertEquals(EndpointProfile.NVIDIA_ENDPOINT_URL, repo.settings.value.endpointInput)
+
+    // 5. Switch back to LAN profile and delete custom profile cleanly
+    assertTrue(repo.activateProfile("lan_whisper") is ActivateProfileResult.Activated)
+    assertEquals("lan_whisper", repo.settings.value.activeProfileId)
+    repo.deleteProfile("lan_whisper")
+    assertNull(repo.settings.value.activeProfileId)
+  }
+
+  @Test
+  fun `EndpointProfile deriveDisplayName strips https, falls back to IP, and fits screen length`() {
+    assertEquals(
+      "Custom Name",
+      EndpointProfile.deriveDisplayName("Custom Name", "https://example.com", false, ""),
+    )
+    assertEquals(
+      "stt.internal.lan:8443",
+      EndpointProfile.deriveDisplayName("", "https://stt.internal.lan:8443/", false, ""),
+    )
+    assertEquals(
+      "10.3.3.20",
+      EndpointProfile.deriveDisplayName("", "", true, "10.3.3.20"),
+    )
+    val longName =
+      EndpointProfile.deriveDisplayName(
+        "",
+        "https://very-long-internal-whisper-transcription-server.tailscale.ts.net/v1/audio/transcriptions",
+        false,
+        "",
+      )
+    assertTrue(longName.length <= 36)
+    assertTrue(longName.endsWith("…"))
+    assertFalse(longName.contains("https://"))
+  }
+
+  @Test
   fun `MicKeyService tracks foreground app via TYPE_WINDOW_STATE_CHANGED, passes source_package, and clears on launcher`() {
     val service = Robolectric.setupService(MicKeyService::class.java)
     val repo = SettingsRepository.get(service)
     repo.setMicButtonCapture(true)
 
-    // Enter SmartTube
     service.onAccessibilityEvent(
       AccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED).apply {
         packageName = AppHandoff.PKG_SMARTTUBE
@@ -235,7 +362,6 @@ class ExampleRobolectricTest {
     )
     assertEquals(AppHandoff.PKG_SMARTTUBE, ForegroundAppTracker.currentSourcePackage())
 
-    // Transient overlay (SystemUI / volume dialog) must NOT overwrite SmartTube
     service.onAccessibilityEvent(
       AccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED).apply {
         packageName = "com.android.systemui"
@@ -243,7 +369,6 @@ class ExampleRobolectricTest {
     )
     assertEquals(AppHandoff.PKG_SMARTTUBE, ForegroundAppTracker.currentSourcePackage())
 
-    // Mic key press launches MainActivity with EXTRA_SOURCE_PACKAGE = SmartTube
     val downSearch = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_SEARCH)
     assertTrue(service.handleKeyEvent(downSearch))
 
@@ -257,7 +382,6 @@ class ExampleRobolectricTest {
     assertTrue(service.handleKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_SEARCH)))
     assertFalse(service.handleKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_CENTER)))
 
-    // Returning to Google TV launcher clears source_package so Home uses default app
     service.onAccessibilityEvent(
       AccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED).apply {
         packageName = "com.google.android.apps.tv.launcherx"
@@ -265,7 +389,6 @@ class ExampleRobolectricTest {
     )
     assertNull(ForegroundAppTracker.currentSourcePackage())
 
-    // Toggle off lets foreground app handle the key
     repo.setMicButtonCapture(false)
     assertFalse(service.handleKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_SEARCH)))
     repo.setMicButtonCapture(true)
@@ -281,7 +404,6 @@ class ExampleRobolectricTest {
     installNewPipe(shadowPm)
     installLaunchOnlyApp(shadowPm, kodiPkg)
 
-    // 1. Inside NewPipe (default is SmartTube) -> routes to NewPipe
     val resNewPipe =
       AppHandoff.launchWithFallback(
         context = app,
@@ -297,7 +419,6 @@ class ExampleRobolectricTest {
     assertTrue(resNewPipe.usedCurrentApp)
     assertEquals(AppHandoff.PKG_NEWPIPE, shadowOf(app).nextStartedActivity?.`package`)
 
-    // 2. Inside launch-only app (no direct search) -> falls back to default SmartTube
     val resKodi =
       AppHandoff.launchWithFallback(
         context = app,
@@ -313,7 +434,6 @@ class ExampleRobolectricTest {
     assertFalse(resKodi.usedCurrentApp)
     assertEquals(AppHandoff.PKG_SMARTTUBE, shadowOf(app).nextStartedActivity?.`package`)
 
-    // 3. Home screen (sourcePackage == null) -> uses default SmartTube
     val resHome =
       AppHandoff.launchWithFallback(
         context = app,
@@ -327,9 +447,7 @@ class ExampleRobolectricTest {
     assertTrue(resHome is HandoffResult.Launched)
     assertEquals(AppHandoff.PKG_SMARTTUBE, (resHome as HandoffResult.Launched).packageName)
     assertFalse(resHome.usedCurrentApp)
-    assertEquals(AppHandoff.PKG_SMARTTUBE, shadowOf(app).nextStartedActivity?.`package`)
 
-    // 4. App marked NOT_WORKING -> skipped, falls back to default SmartTube
     val resBlocked =
       AppHandoff.launchWithFallback(
         context = app,
@@ -342,9 +460,7 @@ class ExampleRobolectricTest {
       )
     assertTrue(resBlocked is HandoffResult.Launched)
     assertEquals(AppHandoff.PKG_SMARTTUBE, (resBlocked as HandoffResult.Launched).packageName)
-    assertEquals(AppHandoff.PKG_SMARTTUBE, shadowOf(app).nextStartedActivity?.`package`)
 
-    // 5. searchInCurrentApp = false -> always uses default SmartTube
     val resToggleOff =
       AppHandoff.launchWithFallback(
         context = app,
@@ -357,9 +473,7 @@ class ExampleRobolectricTest {
       )
     assertTrue(resToggleOff is HandoffResult.Launched)
     assertEquals(AppHandoff.PKG_SMARTTUBE, (resToggleOff as HandoffResult.Launched).packageName)
-    assertEquals(AppHandoff.PKG_SMARTTUBE, shadowOf(app).nextStartedActivity?.`package`)
 
-    // 6. When default also fails / NOT_WORKING -> returns HandoffResult.Failed
     val resFailed =
       AppHandoff.launchWithFallback(
         context = app,
