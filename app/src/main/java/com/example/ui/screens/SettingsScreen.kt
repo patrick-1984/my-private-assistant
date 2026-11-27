@@ -709,7 +709,7 @@ private fun ConfigurationEditorCard(
             if (availableModels.isNotEmpty()) {
               "Discovered ${availableModels.size} speech/OpenAI model(s)"
             } else {
-              "Query OpenAI /v1/models or specify a model ID (e.g. nvidia/parakeet-tdt-0.6b-v3)"
+              "Query OpenAI /v1/models or specify a model ID (e.g. nvidia/parakeet-tdt-0.6b)"
             },
           modifier = Modifier.testTag("use_custom_model_checkbox"),
         )

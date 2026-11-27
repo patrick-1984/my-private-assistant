@@ -89,55 +89,36 @@ Source: [NVIDIA API quickstart](https://docs.api.nvidia.com/nim/docs/api-quickst
 how long the free trial lasts are not published on an official page we could find (users report about
 40 requests per minute). The trial is meant for development and evaluation; read NVIDIA's terms.
 
-### Which models, and how they are reached
+### Default NVIDIA endpoint and models
 
-The speech-to-text models on build.nvidia.com (filter **ASR**) include Parakeet (several variants),
-Canary, Whisper large v3 and Nemotron. **The endpoint is not in the page text: open a model page and
-click the "API" tab (it needs JavaScript).** There are two kinds:
+The default NVIDIA OpenAI-compatible API endpoint (pre-configured in the app's inactive **NVIDIA** Configuration Set) is:
+
+- Default NVIDIA endpoint: `https://integrate.api.nvidia.com/v1` (which resolves to `https://integrate.api.nvidia.com/v1/audio/transcriptions` and `https://integrate.api.nvidia.com/v1/models`)
+
+Simply edit the pre-configured **NVIDIA** entry in **Settings > 1. Configuration Sets**, paste your `nvapi-…` API key, and press **Done** (or **Test Connection**).
+
+If a specific speech model page on `build.nvidia.com` (filter **ASR**, click the **API** tab) shows a dedicated HTTP or gRPC address instead:
 
 | Model (API tab) | Protocol | Usable by this app directly? |
 |---|---|---|
-| [parakeet-tdt-0.6b](https://build.nvidia.com/nvidia/parakeet-tdt-0_6b/api) (25 European languages, including Polish) | HTTP `POST .../v1/audio/transcriptions`, multipart, Bearer key | Possibly, see below |
-| [parakeet-ctc-1.1b-asr](https://build.nvidia.com/nvidia/parakeet-ctc-1_1b-asr/api) (English) | HTTP `POST .../v1/audio/transcriptions`, multipart, Bearer key | Possibly, see below |
+| Unified OpenAI-compatible NVIDIA base | HTTP `POST https://integrate.api.nvidia.com/v1/audio/transcriptions`, multipart, Bearer key | **Default preset** in the app (`nvidia/parakeet-tdt-0.6b`) |
+| [parakeet-tdt-0.6b](https://build.nvidia.com/nvidia/parakeet-tdt-0_6b/api) (25 European languages, including Polish) | HTTP `POST .../v1/audio/transcriptions`, multipart, Bearer key | Yes (`https://2b940e91-a70e-4483-a958-d50408b96589.invocation.api.nvcf.nvidia.com`) |
+| [parakeet-ctc-1.1b-asr](https://build.nvidia.com/nvidia/parakeet-ctc-1_1b-asr/api) (English) | HTTP `POST .../v1/audio/transcriptions`, multipart, Bearer key | Yes (`https://1598d209-5e27-4d3c-8079-4751568b1081.invocation.api.nvcf.nvidia.com`) |
 | [whisper-large-v3](https://build.nvidia.com/openai/whisper-large-v3/api), [canary-1b-asr](https://build.nvidia.com/nvidia/canary-1b-asr/api), parakeet-tdt-0.6b-v2, parakeet-1.1b-rnnt-multilingual and others | **gRPC only** (`grpc.nvcf.nvidia.com:443` with a `function-id` header) | **No.** Use a proxy (below) |
 
-For the two HTTP models, the API tab shows a `curl` example with an address of the form
-`https://<function-id>.invocation.api.nvcf.nvidia.com/v1/audio/transcriptions`. At the time of writing:
+### Testing from a computer
 
-- parakeet-tdt-0.6b: `https://2b940e91-a70e-4483-a958-d50408b96589.invocation.api.nvcf.nvidia.com`
-- parakeet-ctc-1.1b-asr: `https://1598d209-5e27-4d3c-8079-4751568b1081.invocation.api.nvcf.nvidia.com`
-
-Copy the current address from the API tab; NVIDIA can change it.
-
-### Direct use with the app: unverified
-
-The request format matches what the app sends (multipart `file`, Bearer key, JSON answer with `text`),
-and both addresses answer with "unauthorized" without a valid key, so they are live. **A real
-transcription from this app has not been tested.** Two things may stop it:
-
-- **Model name.** NVIDIA's speech API documents that an unknown `model` value is rejected (HTTP 400),
-  and the app always sends a model, `whisper-1` on the first test (the model field appears only after a
-  successful test).
-- **Language code.** NVIDIA's examples use full codes such as `en-US`, `en-GB`. The app sends `en` or
-  `pl` (or nothing, with Auto). NVIDIA documents that a request needs a language or a model; whether
-  the short codes are accepted is not documented.
-
-Check it from a computer before you touch the TV (`test.wav` is a short recording; the `model` value is
-what the app would send). On macOS or Linux, this asks for the key without showing it or saving it in
-the shell history:
+For NVIDIA NIM / HTTP ASR endpoints, the app sends BCP-47 language codes (`multi`, `pl-PL`, `en-US`) and omits the default `whisper-1` placeholder unless you select a specific model ID (with automatic fallback if a deployment rejects `model` or `stream`). You can test the default NVIDIA endpoint from macOS or Linux without saving the key in shell history:
 
 ```sh
 read -rs NVIDIA_API_KEY && export NVIDIA_API_KEY
-curl -s https://2b940e91-a70e-4483-a958-d50408b96589.invocation.api.nvcf.nvidia.com/v1/audio/transcriptions \
-  -H "Authorization: Bearer $NVIDIA_API_KEY" -F file=@test.wav -F model=whisper-1 -F language=pl -F response_format=json
+curl -s https://integrate.api.nvidia.com/v1/audio/transcriptions \
+  -H "Authorization: Bearer $NVIDIA_API_KEY" -F file=@test.wav -F model=nvidia/parakeet-tdt-0.6b -F language=pl-PL -F response_format=json
 unset NVIDIA_API_KEY
 ```
 
-- If it returns `{"text": "..."}`: in the app, type the base address
-  (`https://2b940e91-a70e-4483-a958-d50408b96589.invocation.api.nvcf.nvidia.com`), turn on
-  **Provide API key**, paste the key, set **3. Language** to the language you tested, and press
-  **Test Connection**.
-- If it returns an error about the model or the language: use the proxy below.
+- If it returns `{"text": "..."}`: in the app, edit the **NVIDIA** configuration set (or enter `https://integrate.api.nvidia.com/v1`), paste your API key, and press **Test Connection** or **Done**.
+- If a model is gRPC-only (or requires mapping a model name): use the LiteLLM proxy below.
 
 Source for the request and answer format:
 [NIM for Speech, HTTP ASR API reference](https://docs.nvidia.com/nim/speech/latest/reference/api-references/asr/http-asr.html).

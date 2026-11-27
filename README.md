@@ -95,11 +95,8 @@ In the app: **Settings > 1. Transcription Endpoint**, type the address (for exam
 with JSON (`{"text": "..."}`) and, for the first test, accept the model name `whisper-1`; after a
 successful test you can pick or type another model under **Pick custom model / endpoint**.
 
-**NVIDIA build.nvidia.com** gives a free trial API key. Two of its speech-to-text models (Parakeet TDT
-0.6b, which includes Polish, and Parakeet CTC 1.1b, English) offer an OpenAI-style HTTP endpoint; the
-address is on each model page's **API** tab. Using it directly from this app is **not yet verified**
-(NVIDIA may reject the app's first-test model name `whisper-1` or its short language codes). Other NVIDIA models, such as
-Whisper large v3 and Canary, are gRPC-only and need a small proxy such as LiteLLM in between.
+**NVIDIA build.nvidia.com** gives a free trial API key. The default NVIDIA endpoint is
+`https://integrate.api.nvidia.com/v1`, pre-configured as an inactive **NVIDIA** entry in **Settings > 1. Configuration Sets** — edit it to paste your `nvapi-…` key (and adjust model or language if needed) to activate it. Some NVIDIA speech models on `build.nvidia.com` instead expose per-model `*.invocation.api.nvcf.nvidia.com` HTTP URLs or are gRPC-only (requiring a proxy such as LiteLLM).
 
 Details, examples and the NVIDIA steps: [`docs/ENDPOINTS.md`](docs/ENDPOINTS.md).
 

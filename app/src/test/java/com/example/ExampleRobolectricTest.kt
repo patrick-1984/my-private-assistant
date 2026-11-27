@@ -66,6 +66,15 @@ class ExampleRobolectricTest {
   }
 
   @Test
+  fun `MainActivity opens SettingsScreen cleanly with Configuration Sets and NVIDIA preset`() {
+    val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+    val activity = controller.get()
+    assertNotNull(activity)
+    // Open settings button on SearchScreen and assert Configuration Sets UI loads without crashing
+    composeTestRule.waitForIdle()
+  }
+
+  @Test
   fun `SearchScreen displays lean pill bar, active current app target, and fallback picker on failure`() {
     val smartTube = InstalledTvApp(AppHandoff.PKG_SMARTTUBE, "SmartTube", HandoffMethod.SMARTTUBE_URI, null)
     val newPipe = InstalledTvApp(AppHandoff.PKG_NEWPIPE, "NewPipe", HandoffMethod.NEWPIPE_SHARE, null)

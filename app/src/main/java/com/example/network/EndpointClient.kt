@@ -879,7 +879,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
 
     for (candidate in candidates) {
       try {
-        val response =
+        var response =
           sendAudioRequest(
             url = candidate.url,
             family = candidate.family,
@@ -892,6 +892,26 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
             connectTimeoutMs = PROBE_TIMEOUT_MS,
             readTimeoutMs = PROBE_TIMEOUT_MS,
           )
+        if (
+          isNvidiaNimUrl(candidate.url) &&
+            (response.statusCode == 400 || response.statusCode == 422) &&
+            !bodyMentionsAudioOrFileError(response.body) &&
+            modelName.trim().let { it.isNotEmpty() && it != AppSettings.DEFAULT_MODEL_NAME }
+        ) {
+          response =
+            sendAudioRequest(
+              url = candidate.url,
+              family = candidate.family,
+              wavBytes = silentWav,
+              apiKey = apiKey,
+              modelName = "",
+              language = language,
+              validatedOverrideIp = validatedOverrideIp,
+              ignoreSsl = ignoreSsl,
+              connectTimeoutMs = PROBE_TIMEOUT_MS,
+              readTimeoutMs = PROBE_TIMEOUT_MS,
+            )
+        }
         when (response.statusCode) {
           200 -> {
             if (isJsonWithTextField(response.body) || looksLikeSseTranscript(response.body)) {
@@ -935,14 +955,20 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
                 lastError = null,
               )
             } else {
-              lastError = "HTTP ${response.statusCode} at ${candidate.url}"
+              val detail = extractErrorMessage(response.body)
+              lastError =
+                if (detail.isNotBlank()) "HTTP ${response.statusCode}: $detail"
+                else "HTTP ${response.statusCode} at ${candidate.url}"
             }
           }
           404, 405 -> {
             lastError = "HTTP ${response.statusCode} at ${candidate.url}"
           }
           else -> {
-            lastError = "HTTP ${response.statusCode} at ${candidate.url}"
+            val detail = extractErrorMessage(response.body)
+            lastError =
+              if (detail.isNotBlank()) "HTTP ${response.statusCode}: $detail"
+              else "HTTP ${response.statusCode} at ${candidate.url}"
           }
         }
       } catch (e: IOException) {
@@ -1141,7 +1167,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           readTimeoutMs = TRANSCRIBE_READ_TIMEOUT_MS,
         )
 
-      // Graceful fallback if endpoint rejects stream=true with 400/422/501
+      // Graceful fallback if endpoint rejects stream=true or explicit NIM model with 400/422/501
       if (
         preferStreamingSse &&
           (response.statusCode == 400 || response.statusCode == 422 || response.statusCode == 501)
@@ -1154,6 +1180,28 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
             wavBytes = wavBytes,
             apiKey = apiKey,
             modelName = modelName,
+            language = language,
+            validatedOverrideIp = validatedOverrideIp,
+            ignoreSsl = ignoreSsl,
+            streamSse = false,
+            onSseLine = null,
+            connectTimeoutMs = TRANSCRIBE_CONNECT_TIMEOUT_MS,
+            readTimeoutMs = TRANSCRIBE_READ_TIMEOUT_MS,
+          )
+      }
+
+      if (
+        isNvidiaNimUrl(url) &&
+          (response.statusCode == 400 || response.statusCode == 422) &&
+          modelName.trim().let { it.isNotEmpty() && it != AppSettings.DEFAULT_MODEL_NAME }
+      ) {
+        response =
+          sendAudioRequest(
+            url = url,
+            family = family,
+            wavBytes = wavBytes,
+            apiKey = apiKey,
+            modelName = "",
             language = language,
             validatedOverrideIp = validatedOverrideIp,
             ignoreSsl = ignoreSsl,
@@ -1200,6 +1248,19 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
     }
   }
 
+  private fun isNvidiaNimUrl(url: String): Boolean {
+    return url.contains("nvcf.nvidia.com", ignoreCase = true) ||
+      url.contains("integrate.api.nvidia.com", ignoreCase = true)
+  }
+
+  private fun nvidiaBcp47Language(language: LanguageOption): String {
+    return when (language) {
+      LanguageOption.AUTO -> "multi"
+      LanguageOption.POLISH -> "pl-PL"
+      LanguageOption.ENGLISH -> "en-US"
+    }
+  }
+
   private fun sendAudioRequest(
     url: String,
     family: ServerFamily,
@@ -1222,12 +1283,21 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
       ServerFamily.OPENAI_V1, ServerFamily.OPENAI_NO_V1 -> {
         logicalUrl = url
         fileFieldName = "file"
-        fields["model"] = modelName.ifBlank { AppSettings.DEFAULT_MODEL_NAME }
+        if (isNvidiaNimUrl(url)) {
+          val explicitModel =
+            modelName.trim().takeIf { it.isNotEmpty() && it != AppSettings.DEFAULT_MODEL_NAME }
+          if (explicitModel != null) {
+            fields["model"] = explicitModel
+          }
+          fields["language"] = nvidiaBcp47Language(language)
+        } else {
+          fields["model"] = modelName.ifBlank { AppSettings.DEFAULT_MODEL_NAME }
+          language.code?.let { fields["language"] = it }
+        }
         fields["response_format"] = "json"
         if (streamSse) {
           fields["stream"] = "true"
         }
-        language.code?.let { fields["language"] = it }
       }
       ServerFamily.WHISPER_CPP -> {
         logicalUrl = url

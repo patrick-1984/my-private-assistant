@@ -124,8 +124,11 @@ data class EndpointProfile(
 
   companion object {
     const val NVIDIA_PRESET_ID = "preset_nvidia_asr"
-    const val NVIDIA_ENDPOINT_URL = "https://integrate.api.nvidia.com/v1/audio/transcriptions"
-    const val NVIDIA_DEFAULT_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
+    const val NVIDIA_ENDPOINT_URL = "https://integrate.api.nvidia.com/v1"
+    const val NVIDIA_DETECTED_URL = "https://integrate.api.nvidia.com/v1/audio/transcriptions"
+    const val NVIDIA_OLD_NVCF_URL =
+      "https://2b940e91-a70e-4483-a958-d50408b96589.invocation.api.nvcf.nvidia.com/v1/audio/transcriptions"
+    const val NVIDIA_DEFAULT_MODEL = "nvidia/parakeet-tdt-0.6b"
 
     fun deriveDisplayName(
       customName: String,
@@ -168,7 +171,7 @@ data class EndpointProfile(
         useCustomModel = true,
         modelName = NVIDIA_DEFAULT_MODEL,
         liveTranscription = true,
-        detectedEndpointUrl = NVIDIA_ENDPOINT_URL,
+        detectedEndpointUrl = NVIDIA_DETECTED_URL,
         detectedFamily = ServerFamily.OPENAI_V1,
         detectedForInput = "$NVIDIA_ENDPOINT_URL|false||false",
         targetPackage = AppSettings.DEFAULT_TARGET_PACKAGE,
@@ -445,7 +448,17 @@ class SettingsRepository private constructor(context: Context) {
       buildList {
         for (i in 0 until arr.length()) {
           val obj = arr.optJSONObject(i) ?: continue
-          add(EndpointProfile.fromJson(obj))
+          val parsed = EndpointProfile.fromJson(obj)
+          if (
+            parsed.id == EndpointProfile.NVIDIA_PRESET_ID &&
+              (parsed.endpointInput == EndpointProfile.NVIDIA_OLD_NVCF_URL ||
+                parsed.endpointInput == EndpointProfile.NVIDIA_DETECTED_URL) &&
+              parsed.apiKey.isBlank()
+          ) {
+            add(EndpointProfile.defaultNvidiaProfile())
+          } else {
+            add(parsed)
+          }
         }
       }
     } catch (_: Exception) {

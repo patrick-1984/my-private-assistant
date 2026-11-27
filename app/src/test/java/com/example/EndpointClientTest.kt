@@ -431,15 +431,16 @@ class EndpointClientTest {
   }
 
   @Test
-  fun `nvidia catalog filters to speech models and works with nvidia parakeet and SSE streaming`() =
+  fun `nvidia catalog filters to speech models and works with default integrate api nvidia v1 and SSE streaming`() =
     runTest {
+      val nvidiaBase = "https://integrate.api.nvidia.com/v1"
       val nvidiaBody =
-        """{"data":[{"id":"meta/llama-3.1-70b-instruct"},{"id":"mistralai/mixtral-8x7b"},{"id":"nvidia/parakeet-tdt-0.6b-v3"},{"id":"openai/whisper-large-v3"},{"id":"nvidia/canary-1b"}]}"""
+        """{"data":[{"id":"meta/llama-3.1-70b-instruct"},{"id":"mistralai/mixtral-8x7b"},{"id":"nvidia/parakeet-tdt-0.6b"},{"id":"openai/whisper-large-v3"},{"id":"nvidia/canary-1b"}]}"""
       val transport =
         FakeTransport(
           getHandler = { url, headers, _, _ ->
             if (
-              url == "https://integrate.api.nvidia.com/v1/models" &&
+              url == "$nvidiaBase/models" &&
                 headers["Authorization"] == "Bearer nvapi-secret-key"
             ) {
               HttpResponseData(200, nvidiaBody)
@@ -448,9 +449,10 @@ class EndpointClientTest {
             }
           },
           handler = { url, headers, _, fields, _ ->
-            assertEquals("https://integrate.api.nvidia.com/v1/audio/transcriptions", url)
+            assertEquals("$nvidiaBase/audio/transcriptions", url)
             assertEquals("Bearer nvapi-secret-key", headers["Authorization"])
-            assertEquals("nvidia/parakeet-tdt-0.6b-v3", fields["model"])
+            assertEquals("nvidia/parakeet-tdt-0.6b", fields["model"])
+            assertEquals("pl-PL", fields["language"])
             if (fields["stream"] == "true") {
               HttpResponseData(
                 200,
@@ -469,8 +471,10 @@ class EndpointClientTest {
       val client = EndpointClient(transport)
       val nvidiaSettings =
         com.example.data.EndpointProfile.defaultNvidiaProfile()
-          .copy(apiKey = "nvapi-secret-key")
+          .copy(apiKey = "nvapi-secret-key", language = LanguageOption.POLISH)
           .toProbeSettings()
+
+      assertEquals("https://integrate.api.nvidia.com/v1", nvidiaSettings.endpointInput)
 
       val probe =
         client.detectEndpoint(
@@ -481,7 +485,7 @@ class EndpointClientTest {
         )
       assertTrue(probe is ProbeResult.Success)
       assertEquals(
-        listOf("nvidia/parakeet-tdt-0.6b-v3", "openai/whisper-large-v3", "nvidia/canary-1b"),
+        listOf("nvidia/parakeet-tdt-0.6b", "openai/whisper-large-v3", "nvidia/canary-1b"),
         (probe as ProbeResult.Success).availableModels,
       )
 
@@ -501,19 +505,26 @@ class EndpointClientTest {
     }
 
   @Test
-  fun `sse streaming falls back cleanly to standard json if server rejects stream=true`() =
+  fun `nvidia NIM retries without model when custom model or stream is rejected with 400 or 422`() =
     runTest {
+      val seenFields = mutableListOf<Map<String, String>>()
       val transport = FakeTransport { _, _, _, fields, _ ->
-        if (fields["stream"] == "true") {
-          HttpResponseData(422, """{"detail":"Extra inputs are not permitted: stream"}""")
-        } else {
-          HttpResponseData(200, """{"text":"fallback worked"}""")
+        seenFields.add(fields.toMap())
+        when {
+          fields["stream"] == "true" ->
+            HttpResponseData(422, """{"detail":"Extra inputs are not permitted: stream"}""")
+          fields.containsKey("model") ->
+            HttpResponseData(400, """{"detail":"Unknown model identifier"}""")
+          else -> {
+            assertEquals("multi", fields["language"])
+            HttpResponseData(200, """{"text":"fallback worked"}""")
+          }
         }
       }
       val client = EndpointClient(transport)
       val settings =
         com.example.data.EndpointProfile.defaultNvidiaProfile()
-          .copy(apiKey = "nvapi-test", liveTranscription = true)
+          .copy(apiKey = "nvapi-test", useCustomModel = true, liveTranscription = true)
           .toProbeSettings()
 
       val res =
@@ -526,5 +537,6 @@ class EndpointClientTest {
         )
       assertTrue(res is TranscribeResult.Success)
       assertEquals("fallback worked", (res as TranscribeResult.Success).text)
+      assertEquals(3, seenFields.size)
     }
 }
