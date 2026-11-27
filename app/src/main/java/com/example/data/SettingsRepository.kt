@@ -215,18 +215,27 @@ class SettingsRepository private constructor(context: Context) {
   }
 
   private fun normalizeNvidiaIfUntouched(ep: EndpointPreset): EndpointPreset {
-    return if (
-      ep.id == EndpointPreset.NVIDIA_PRESET_ID &&
-        ep.apiKey.isBlank() &&
-        (ep.endpointInput == EndpointPreset.NVIDIA_OLD_NVCF_URL ||
-          ep.endpointInput == EndpointPreset.NVIDIA_DETECTED_URL ||
-          (ep.endpointInput == EndpointPreset.NVIDIA_ENDPOINT_URL &&
-            ep.modelName.startsWith("nvidia/parakeet-tdt-0.6b")))
-    ) {
-      EndpointPreset.defaultNvidiaPreset()
-    } else {
-      ep
-    }
+    if (ep.id != EndpointPreset.NVIDIA_PRESET_ID) return ep
+    val cleanInput = ep.endpointInput.trim().trimEnd('/')
+    val isOldBrokenNvidiaUrl =
+      cleanInput == EndpointPreset.NVIDIA_OLD_NVCF_URL ||
+        cleanInput == EndpointPreset.NVIDIA_OLD_INTEGRATE_URL ||
+        cleanInput == EndpointPreset.NVIDIA_OLD_INTEGRATE_DETECTED_URL
+
+    if (!isOldBrokenNvidiaUrl) return ep
+
+    val defaults = EndpointPreset.defaultNvidiaPreset()
+    return ep.copy(
+      endpointInput = defaults.endpointInput,
+      useCustomModel = true,
+      modelName = EndpointPreset.NVIDIA_DEFAULT_MODEL,
+      functionId = ep.functionId.ifBlank { defaults.functionId },
+      liveTranscription = true,
+      detectedEndpointUrl = defaults.detectedEndpointUrl,
+      detectedFamily = defaults.detectedFamily,
+      detectedForInput =
+        "${defaults.endpointInput}|${ep.useIpOverride}|${ep.overrideIp.trim()}|${ep.ignoreSsl}|${ep.functionId.ifBlank { defaults.functionId }}",
+    )
   }
 
   private fun readFromPrefs(): AppSettings {
@@ -268,6 +277,7 @@ class SettingsRepository private constructor(context: Context) {
       language = resolvedApp.language,
       apiKey = primaryEp?.apiKey.orEmpty(),
       modelName = primaryEp?.modelName ?: AppSettings.DEFAULT_MODEL_NAME,
+      functionId = primaryEp?.functionId.orEmpty(),
       micSource = resolvedApp.micSource,
       lastAssistArgsLog = lastAssistArgsLog,
       appHandoffStatuses = statuses,
@@ -395,6 +405,7 @@ class SettingsRepository private constructor(context: Context) {
         overrideIp = preset.overrideIp.trim(),
         apiKey = preset.apiKey.trim(),
         modelName = preset.modelName.trim().ifBlank { AppSettings.DEFAULT_MODEL_NAME },
+        functionId = preset.functionId.trim(),
       )
 
     val current = _settings.value
@@ -729,12 +740,25 @@ class SettingsRepository private constructor(context: Context) {
     private const val KEY_LAST_ASSIST_ARGS = "last_assist_args"
 
     @Volatile private var instance: SettingsRepository? = null
+    @Volatile private var boundAppContext: Context? = null
 
     fun get(context: Context): SettingsRepository {
-      return instance
-        ?: synchronized(this) {
-          instance ?: SettingsRepository(context.applicationContext).also { instance = it }
+      val appCtx = context.applicationContext
+      val current = instance
+      if (current != null && boundAppContext === appCtx) {
+        return current
+      }
+      return synchronized(this) {
+        val existing = instance
+        if (existing != null && boundAppContext === appCtx) {
+          existing
+        } else {
+          SettingsRepository(appCtx).also {
+            instance = it
+            boundAppContext = appCtx
+          }
         }
+      }
     }
   }
 }

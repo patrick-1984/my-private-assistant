@@ -43,6 +43,7 @@ import com.example.data.EndpointPreset
 import com.example.data.EndpointSlot
 import com.example.data.LanguageOption
 import com.example.data.MicSource
+import com.example.data.NvidiaFunctionPreset
 import com.example.handoff.InstalledTvApp
 import com.example.ui.components.TvPrimaryButton
 import com.example.ui.components.TvSecondaryButton
@@ -73,6 +74,8 @@ data class SettingsActions(
   val onCheckEndpointHealth: (EndpointPreset) -> Unit = {},
   val onEndpointNameChange: (String) -> Unit = {},
   val onEndpointUrlChange: (String) -> Unit = {},
+  val onFunctionIdChange: (String) -> Unit = {},
+  val onApplyNvidiaCloudPreset: (NvidiaFunctionPreset?) -> Unit = {},
   val onToggleIpOverride: (Boolean) -> Unit = {},
   val onOverrideIpChange: (String) -> Unit = {},
   val onToggleIgnoreSsl: (Boolean) -> Unit = {},
@@ -369,17 +372,79 @@ internal fun EndpointPresetEditor(
     )
 
     Text(
-      text = "Transcription endpoint (host, URL, or full path)",
+      text = "Transcription endpoint (HTTP/HTTPS OpenAI URL, or gRPC host:port e.g. grpc.nvcf.nvidia.com:443)",
       style = MaterialTheme.typography.bodyMedium,
       color = TvTextSecondary,
     )
     TvOutlinedInput(
       value = draft.endpointInput,
       onValueChange = actions.onEndpointUrlChange,
-      placeholderText = "10.3.3.20:8000 or https://…",
+      placeholderText = "10.3.3.20:8000, https://…, or grpc.nvcf.nvidia.com:443",
       onDone = actions.onTestEndpoint,
       modifier = Modifier.fillMaxWidth().testTag("endpoint_input"),
     )
+
+    if (!draft.isGrpcEndpoint && draft.endpointInput.isBlank()) {
+      TvSecondaryButton(
+        onClick = { actions.onApplyNvidiaCloudPreset(null) },
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        modifier = Modifier.testTag("fill_nvidia_grpc_button"),
+      ) {
+        Text(
+          text = "Use NVIDIA Cloud gRPC (grpc.nvcf.nvidia.com:443)",
+          style = MaterialTheme.typography.labelLarge,
+          maxLines = 1,
+        )
+      }
+    }
+
+    AnimatedVisibility(visible = draft.isGrpcEndpoint) {
+      Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+          text = "NVIDIA Cloud Function ID (gRPC `function-id` UUID)",
+          style = MaterialTheme.typography.bodyMedium,
+          color = TvCyan,
+        )
+        FlowRow(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          EndpointPreset.NVIDIA_FUNCTION_PRESETS.forEach { preset ->
+            val selected = draft.functionId.trim().equals(preset.functionId, ignoreCase = true)
+            TvSecondaryButton(
+              onClick = { actions.onApplyNvidiaCloudPreset(preset) },
+              isSelected = selected,
+              contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+              modifier = Modifier.testTag("nvidia_fn_chip_${preset.id}"),
+            ) {
+              if (selected) {
+                Icon(
+                  imageVector = Icons.Rounded.Check,
+                  contentDescription = null,
+                  tint = TvCyan,
+                  modifier = Modifier.size(16.dp),
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+              }
+              Text(
+                text = "${preset.label} (${preset.subtitle})",
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+              )
+            }
+          }
+        }
+        TvOutlinedInput(
+          value = draft.functionId,
+          onValueChange = actions.onFunctionIdChange,
+          placeholderText = "UUID e.g. ${EndpointPreset.NVIDIA_DEFAULT_FUNCTION_ID} (blank for local Riva)",
+          onDone = actions.onTestEndpoint,
+          modifier = Modifier.fillMaxWidth().testTag("function_id_input"),
+        )
+      }
+    }
 
     TvCheckboxRow(
       checked = draft.useIpOverride,

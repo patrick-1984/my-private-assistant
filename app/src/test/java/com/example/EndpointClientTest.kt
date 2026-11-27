@@ -431,25 +431,25 @@ class EndpointClientTest {
   }
 
   @Test
-  fun `nvidia catalog ranks parakeet highest version first and default parakeet resolves to highest number`() =
+  fun `nvidia HTTP NIM catalog ranks parakeet highest version first and default parakeet resolves to highest number`() =
     runTest {
-      val nvidiaBase = "https://integrate.api.nvidia.com/v1"
-      val nvidiaBody =
+      val nimBase = "https://custom-nim.invocation.api.nvcf.nvidia.com/v1"
+      val nimBody =
         """{"data":[{"id":"meta/llama-3.1-70b-instruct"},{"id":"nvidia/parakeet-tdt-0.6b"},{"id":"nvidia/parakeet-tdt-0.6b-v2"},{"id":"nvidia/parakeet-tdt-0.6b-v10"},{"id":"nvidia/parakeet-tdt-0.6b-v3"},{"id":"openai/whisper-large-v3"},{"id":"nvidia/canary-1b"}]}"""
       val transport =
         FakeTransport(
           getHandler = { url, headers, _, _ ->
             if (
-              url == "$nvidiaBase/models" &&
+              url == "$nimBase/models" &&
                 headers["Authorization"] == "Bearer nvapi-secret-key"
             ) {
-              HttpResponseData(200, nvidiaBody)
+              HttpResponseData(200, nimBody)
             } else {
               HttpResponseData(404, "")
             }
           },
           handler = { url, headers, _, fields, _ ->
-            assertEquals("$nvidiaBase/audio/transcriptions", url)
+            assertEquals("$nimBase/audio/transcriptions", url)
             assertEquals("Bearer nvapi-secret-key", headers["Authorization"])
             assertEquals("nvidia/parakeet-tdt-0.6b-v10", fields["model"])
             assertEquals("pl-PL", fields["language"])
@@ -469,22 +469,28 @@ class EndpointClientTest {
           },
         )
       val client = EndpointClient(transport)
-      val nvidiaSettings =
-        com.example.data.EndpointPreset.defaultNvidiaPreset()
-          .copy(apiKey = "nvapi-secret-key")
-          .toProbeSettings(
-            com.example.data.AppSettingsPreset.defaultPreset().copy(language = LanguageOption.POLISH)
-          )
+      val nimSettings =
+        com.example.data.EndpointPreset(
+          id = "nim_http_1",
+          customName = "Self-hosted NIM HTTP",
+          endpointInput = nimBase,
+          apiKey = "nvapi-secret-key",
+          useCustomModel = true,
+          modelName = com.example.data.EndpointPreset.NVIDIA_DEFAULT_MODEL,
+          liveTranscription = true,
+        ).toProbeSettings(
+          com.example.data.AppSettingsPreset.defaultPreset().copy(language = LanguageOption.POLISH)
+        )
 
-      assertEquals("https://integrate.api.nvidia.com/v1", nvidiaSettings.endpointInput)
-      assertEquals("parakeet", nvidiaSettings.effectiveModelName)
+      assertEquals(nimBase, nimSettings.endpointInput)
+      assertEquals("parakeet", nimSettings.effectiveModelName)
 
       val probe =
         client.detectEndpoint(
-          rawInput = nvidiaSettings.endpointInput,
-          apiKey = nvidiaSettings.effectiveApiKey,
-          modelName = nvidiaSettings.effectiveModelName,
-          language = nvidiaSettings.language,
+          rawInput = nimSettings.endpointInput,
+          apiKey = nimSettings.effectiveApiKey,
+          modelName = nimSettings.effectiveModelName,
+          language = nimSettings.language,
         )
       assertTrue(probe is ProbeResult.Success)
       assertEquals(
@@ -503,7 +509,7 @@ class EndpointClientTest {
       val result =
         client.transcribe(
           wavBytes = WavEncoder.silentWav(200),
-          settings = nvidiaSettings,
+          settings = nimSettings,
           onEndpointDetected = { _, _ -> },
           onEndpointInvalidated = {},
           onPartialText = { partials.add(it) },
@@ -515,7 +521,7 @@ class EndpointClientTest {
     }
 
   @Test
-  fun `nvidia NIM retries without model when custom model or stream is rejected with 400 or 422`() =
+  fun `nvidia HTTP NIM retries without model when custom model or stream is rejected with 400 or 422`() =
     runTest {
       val seenFields = mutableListOf<Map<String, String>>()
       val transport = FakeTransport { _, _, _, fields, _ ->
@@ -533,9 +539,19 @@ class EndpointClientTest {
       }
       val client = EndpointClient(transport)
       val settings =
-        com.example.data.EndpointPreset.defaultNvidiaPreset()
-          .copy(apiKey = "nvapi-test", useCustomModel = true, liveTranscription = true)
-          .toProbeSettings()
+        com.example.data.EndpointPreset(
+          id = "nim_http_2",
+          customName = "Self-hosted NIM HTTP",
+          endpointInput = "https://custom-nim.invocation.api.nvcf.nvidia.com/v1",
+          apiKey = "nvapi-test",
+          useCustomModel = true,
+          modelName = "nvidia/parakeet-tdt-0.6b-v2",
+          liveTranscription = true,
+          detectedEndpointUrl =
+            "https://custom-nim.invocation.api.nvcf.nvidia.com/v1/audio/transcriptions",
+          detectedFamily = ServerFamily.OPENAI_V1,
+          detectedForInput = "https://custom-nim.invocation.api.nvcf.nvidia.com/v1|false||false",
+        ).toProbeSettings()
 
       val res =
         client.transcribe(

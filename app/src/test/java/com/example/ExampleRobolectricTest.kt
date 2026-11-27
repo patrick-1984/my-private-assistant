@@ -296,6 +296,35 @@ class ExampleRobolectricTest {
   }
 
   @Test
+  fun `SettingsScreen Endpoint Editor shows NVIDIA Function ID chips and gRPC input`() {
+    val nvidiaDraft = EndpointPreset.defaultNvidiaPreset()
+    var selectedPresetId: String? = null
+
+    composeTestRule.setContent {
+      TvVoiceSearchTheme {
+        SettingsScreen(
+          state =
+            MainUiState(
+              isSettingsOpen = true,
+              settingsPage = SettingsPage.EditEndpoint(draft = nvidiaDraft, isNew = false),
+              settings = AppSettings(endpointPresets = listOf(nvidiaDraft)),
+            ),
+          actions = SettingsActions(onApplyNvidiaCloudPreset = { selectedPresetId = it?.id }),
+        )
+      }
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("endpoint_editor_card").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("endpoint_input").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("function_id_input").performScrollTo().assertIsDisplayed()
+    composeTestRule
+      .onNodeWithTag("nvidia_fn_chip_parakeet-tdt-0.6b-v2")
+      .performScrollTo()
+      .performClick()
+    assertEquals("parakeet-tdt-0.6b-v2", selectedPresetId)
+  }
+
+  @Test
   fun `SettingsRepository separates endpoints and app presets, blocks NVIDIA without key, and supports multiple Config combinations`() {
     val context = ApplicationProvider.getApplicationContext<Context>()
     val repo = SettingsRepository.get(context)
@@ -308,6 +337,9 @@ class ExampleRobolectricTest {
     assertNotNull(nvidia)
     assertEquals("NVIDIA", nvidia!!.displayName)
     assertEquals(EndpointPreset.NVIDIA_ENDPOINT_URL, nvidia.endpointInput)
+    assertEquals(EndpointPreset.NVIDIA_DEFAULT_FUNCTION_ID, nvidia.functionId)
+    assertEquals(ServerFamily.NVIDIA_RIVA_GRPC, nvidia.detectedFamily)
+    assertTrue(nvidia.isGrpcEndpoint)
     assertEquals(EndpointPreset.NVIDIA_DEFAULT_MODEL, nvidia.modelName)
     assertFalse(nvidia.apiKeyNotNeeded)
     assertTrue(nvidia.isMissingRequiredApiKey)

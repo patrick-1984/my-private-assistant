@@ -20,6 +20,7 @@ enum class ServerFamily(val label: String) {
   OPENAI_NO_V1("OpenAI-compatible"),
   WHISPER_CPP("whisper.cpp"),
   WHISPER_ASR("whisper-asr-webservice"),
+  NVIDIA_RIVA_GRPC("NVIDIA Riva gRPC"),
 }
 
 enum class AppHandoffStatus(val label: String) {
@@ -74,6 +75,13 @@ data class EndpointHealthRecord(
   }
 }
 
+data class NvidiaFunctionPreset(
+  val id: String,
+  val label: String,
+  val functionId: String,
+  val subtitle: String,
+)
+
 data class EndpointPreset(
   val id: String = UUID.randomUUID().toString(),
   val customName: String = "",
@@ -85,6 +93,7 @@ data class EndpointPreset(
   val apiKeyNotNeeded: Boolean = false,
   val useCustomModel: Boolean = false,
   val modelName: String = AppSettings.DEFAULT_MODEL_NAME,
+  val functionId: String = "",
   val liveTranscription: Boolean = false,
   val detectedEndpointUrl: String = "",
   val detectedFamily: ServerFamily? = null,
@@ -93,11 +102,35 @@ data class EndpointPreset(
   val displayName: String
     get() = deriveDisplayName(customName, endpointInput, useIpOverride, overrideIp)
 
+  val isGrpcEndpoint: Boolean
+    get() {
+      val trimmed = endpointInput.trim()
+      if (detectedFamily == ServerFamily.NVIDIA_RIVA_GRPC) return true
+      if (trimmed.isEmpty()) return functionId.isNotBlank()
+      if (
+        trimmed.startsWith("grpc://", ignoreCase = true) ||
+          trimmed.startsWith("grpcs://", ignoreCase = true)
+      ) {
+        return true
+      }
+      val hasHttpScheme =
+        trimmed.startsWith("http://", ignoreCase = true) ||
+          trimmed.startsWith("https://", ignoreCase = true)
+      if (hasHttpScheme) return false
+      return trimmed.contains("nvcf.nvidia.com", ignoreCase = true) ||
+        functionId.isNotBlank() ||
+        trimmed.endsWith(":50051")
+    }
+
   val cacheKey: String
-    get() = "${endpointInput.trim()}|$useIpOverride|${overrideIp.trim()}|$ignoreSsl"
+    get() {
+      val base = "${endpointInput.trim()}|$useIpOverride|${overrideIp.trim()}|$ignoreSsl"
+      val fn = functionId.trim()
+      return if (fn.isNotEmpty()) "$base|$fn" else base
+    }
 
   val healthFingerprint: String
-    get() = "$cacheKey|$apiKeyNotNeeded|${apiKey.trim()}"
+    get() = "$cacheKey|$apiKeyNotNeeded|${apiKey.trim()}|${functionId.trim()}"
 
   val effectiveApiKey: String
     get() = if (apiKeyNotNeeded) "" else apiKey.trim()
@@ -127,6 +160,7 @@ data class EndpointPreset(
       apiKey = apiKey,
       useCustomModel = useCustomModel,
       modelName = modelName,
+      functionId = functionId,
       liveTranscription = liveTranscription,
       detectedEndpointUrl = detectedEndpointUrl,
       detectedFamily = detectedFamily,
@@ -151,6 +185,7 @@ data class EndpointPreset(
       put("apiKeyNotNeeded", apiKeyNotNeeded)
       put("useCustomModel", useCustomModel)
       put("modelName", modelName)
+      put("functionId", functionId)
       put("liveTranscription", liveTranscription)
       put("detectedEndpointUrl", detectedEndpointUrl)
       put("detectedFamily", detectedFamily?.name ?: "")
@@ -160,11 +195,43 @@ data class EndpointPreset(
 
   companion object {
     const val NVIDIA_PRESET_ID = "preset_nvidia_asr"
-    const val NVIDIA_ENDPOINT_URL = "https://integrate.api.nvidia.com/v1"
-    const val NVIDIA_DETECTED_URL = "https://integrate.api.nvidia.com/v1/audio/transcriptions"
+    const val NVIDIA_ENDPOINT_URL = "grpc.nvcf.nvidia.com:443"
+    const val NVIDIA_DETECTED_URL = "grpc.nvcf.nvidia.com:443"
+    const val NVIDIA_DEFAULT_FUNCTION_ID = "71203149-d3b7-4460-8231-1be2543a1fca"
+    const val NVIDIA_OLD_INTEGRATE_URL = "https://integrate.api.nvidia.com/v1"
+    const val NVIDIA_OLD_INTEGRATE_DETECTED_URL =
+      "https://integrate.api.nvidia.com/v1/audio/transcriptions"
     const val NVIDIA_OLD_NVCF_URL =
       "https://2b940e91-a70e-4483-a958-d50408b96589.invocation.api.nvcf.nvidia.com/v1/audio/transcriptions"
     const val NVIDIA_DEFAULT_MODEL = "parakeet"
+
+    val NVIDIA_FUNCTION_PRESETS =
+      listOf(
+        NvidiaFunctionPreset(
+          id = "parakeet-1.1b-multilingual",
+          label = "Parakeet 1.1B Multilingual",
+          functionId = NVIDIA_DEFAULT_FUNCTION_ID,
+          subtitle = "25 languages incl. Polish & English",
+        ),
+        NvidiaFunctionPreset(
+          id = "parakeet-tdt-0.6b-v2",
+          label = "Parakeet TDT 0.6B v2",
+          functionId = "d3fe9151-442b-4204-a70d-5fcc597fd610",
+          subtitle = "English (fast)",
+        ),
+        NvidiaFunctionPreset(
+          id = "parakeet-ctc-1.1b",
+          label = "Parakeet CTC 1.1B",
+          functionId = "1598d209-5e27-4d3c-8079-4751568b1081",
+          subtitle = "English",
+        ),
+        NvidiaFunctionPreset(
+          id = "parakeet-ctc-0.6b",
+          label = "Parakeet CTC 0.6B",
+          functionId = "d8dd4e9b-fbf5-4fb0-9dba-8cf436c8d965",
+          subtitle = "English (lightweight)",
+        ),
+      )
 
     fun deriveDisplayName(
       customName: String,
@@ -178,7 +245,7 @@ data class EndpointPreset(
       val strippedEndpoint =
         endpointInput
           .trim()
-          .replace(Regex("^https?://", RegexOption.IGNORE_CASE), "")
+          .replace(Regex("^(https?|grpcs?)://", RegexOption.IGNORE_CASE), "")
           .trimEnd('/')
       val cleanIp = overrideIp.trim()
 
@@ -206,10 +273,11 @@ data class EndpointPreset(
         apiKeyNotNeeded = false,
         useCustomModel = true,
         modelName = NVIDIA_DEFAULT_MODEL,
+        functionId = NVIDIA_DEFAULT_FUNCTION_ID,
         liveTranscription = true,
         detectedEndpointUrl = NVIDIA_DETECTED_URL,
-        detectedFamily = ServerFamily.OPENAI_V1,
-        detectedForInput = "$NVIDIA_ENDPOINT_URL|false||false",
+        detectedFamily = ServerFamily.NVIDIA_RIVA_GRPC,
+        detectedForInput = "$NVIDIA_ENDPOINT_URL|false||false|$NVIDIA_DEFAULT_FUNCTION_ID",
       )
     }
 
@@ -231,6 +299,7 @@ data class EndpointPreset(
           json.optString("modelName", AppSettings.DEFAULT_MODEL_NAME).ifBlank {
             AppSettings.DEFAULT_MODEL_NAME
           },
+        functionId = json.optString("functionId", ""),
         liveTranscription = json.optBoolean("liveTranscription", false),
         detectedEndpointUrl = json.optString("detectedEndpointUrl", ""),
         detectedFamily = family,
@@ -433,6 +502,7 @@ data class AppSettings(
   val language: LanguageOption = LanguageOption.AUTO,
   val apiKey: String = "",
   val modelName: String = DEFAULT_MODEL_NAME,
+  val functionId: String = "",
   val micSource: MicSource = MicSource.AUTO,
   val lastAssistArgsLog: String = "",
   val appHandoffStatuses: Map<String, AppHandoffStatus> = emptyMap(),
@@ -469,7 +539,11 @@ data class AppSettings(
   }
 
   val cacheKey: String
-    get() = "${endpointInput.trim()}|$useIpOverride|${overrideIp.trim()}|$ignoreSsl"
+    get() {
+      val base = "${endpointInput.trim()}|$useIpOverride|${overrideIp.trim()}|$ignoreSsl"
+      val fn = functionId.trim()
+      return if (fn.isNotEmpty()) "$base|$fn" else base
+    }
 
   val effectiveApiKey: String
     get() = if (useApiKey) apiKey.trim() else ""

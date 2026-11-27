@@ -109,6 +109,8 @@ class MainActivity : ComponentActivity() {
                   onCheckEndpointHealth = { viewModel.checkEndpointHealthNow(it) },
                   onEndpointNameChange = { viewModel.updateEndpointName(it) },
                   onEndpointUrlChange = { viewModel.updateEndpointInput(it) },
+                  onFunctionIdChange = { viewModel.setFunctionId(it) },
+                  onApplyNvidiaCloudPreset = { viewModel.applyNvidiaCloudPreset(it) },
                   onToggleIpOverride = { viewModel.setUseIpOverride(it) },
                   onOverrideIpChange = { viewModel.updateOverrideIp(it) },
                   onToggleIgnoreSsl = { viewModel.setIgnoreSsl(it) },

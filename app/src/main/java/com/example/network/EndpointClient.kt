@@ -510,7 +510,10 @@ object UrlConnectionTransport : HttpTransport {
   }
 }
 
-class EndpointClient(private val transport: HttpTransport = UrlConnectionTransport) {
+class EndpointClient(
+  private val transport: HttpTransport = UrlConnectionTransport,
+  private val rivaGrpcClient: RivaGrpcClient = RivaGrpcClient(),
+) {
 
   private val discoveredModelsCache = ConcurrentHashMap<String, List<String>>()
 
@@ -673,12 +676,9 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
     useIpOverride: Boolean = false,
     overrideIp: String = "",
     ignoreSsl: Boolean = false,
+    functionId: String = "",
   ): ProbeResult =
     withContext(Dispatchers.IO) {
-      val normalized =
-        normalizeInput(rawInput)
-          ?: return@withContext ProbeResult.Failure("Enter a valid server host or URL.")
-
       val validatedIp =
         if (useIpOverride) {
           validateNumericIp(overrideIp)
@@ -688,6 +688,25 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
         } else {
           null
         }
+
+      if (rivaGrpcClient.isGrpcEndpoint(rawInput, functionId = functionId)) {
+        val silentWav = WavEncoder.silentWav(durationMillis = 500)
+        return@withContext rivaGrpcClient.probe(
+          rawInput = rawInput,
+          apiKey = apiKey,
+          functionId = functionId,
+          modelName = modelName,
+          language = language,
+          validatedOverrideIp = validatedIp,
+          ignoreSsl = ignoreSsl,
+          silentWavBytes = silentWav,
+          probeTimeoutMs = PROBE_TIMEOUT_MS,
+        )
+      }
+
+      val normalized =
+        normalizeInput(rawInput)
+          ?: return@withContext ProbeResult.Failure("Enter a valid server host or URL.")
 
       val silentWav = WavEncoder.silentWav(durationMillis = 500)
       val primaryCandidates = buildCandidates(normalized.primaryBase, normalized.path)
@@ -782,10 +801,6 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
         return@withContext HealthCheckResult.Unhealthy("API key missing.", isAuthError = true)
       }
 
-      val normalized =
-        normalizeInput(settings.endpointInput)
-          ?: return@withContext HealthCheckResult.Unhealthy("Invalid endpoint host or URL.")
-
       val validatedIp =
         if (settings.useIpOverride) {
           validateNumericIp(settings.overrideIp)
@@ -793,6 +808,31 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
         } else {
           null
         }
+
+      if (
+        rivaGrpcClient.isGrpcEndpoint(
+          settings.endpointInput,
+          functionId = settings.functionId,
+          detectedFamily = settings.detectedFamily,
+        )
+      ) {
+        val target = rivaGrpcClient.parseTarget(settings.endpointInput)
+        val result =
+          rivaGrpcClient.quickHealthCheck(
+            settings = settings,
+            validatedOverrideIp = validatedIp,
+            healthTimeoutMs = HEALTH_TIMEOUT_MS,
+            tinySilentWav = WavEncoder.silentWav(durationMillis = 150),
+          )
+        if (result is HealthCheckResult.Healthy && target != null && !settings.hasValidCachedEndpoint) {
+          onEndpointDetected(target.canonicalUrl, ServerFamily.NVIDIA_RIVA_GRPC)
+        }
+        return@withContext result
+      }
+
+      val normalized =
+        normalizeInput(settings.endpointInput)
+          ?: return@withContext HealthCheckResult.Unhealthy("Invalid endpoint host or URL.")
 
       val apiKey = settings.effectiveApiKey
       val candidateBases = buildList {
@@ -909,9 +949,20 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
     useIpOverride: Boolean,
     overrideIp: String,
     ignoreSsl: Boolean,
+    functionId: String = "",
   ): List<String> =
     withContext(Dispatchers.IO) {
       val validatedIp = if (useIpOverride) validateNumericIp(overrideIp) else null
+      if (rivaGrpcClient.isGrpcEndpoint(rawInput, functionId = functionId)) {
+        return@withContext rivaGrpcClient.fetchModels(
+          rawInput = rawInput,
+          apiKey = apiKey,
+          functionId = functionId,
+          validatedOverrideIp = validatedIp,
+          ignoreSsl = ignoreSsl,
+          timeoutMs = PROBE_TIMEOUT_MS,
+        )
+      }
       val baseUrl =
         detectedUrl.ifBlank {
           normalizeInput(rawInput)?.let { "${it.primaryBase}${it.path}" }.orEmpty()
@@ -1254,6 +1305,35 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           null
         }
 
+      if (
+        rivaGrpcClient.isGrpcEndpoint(
+          settings.endpointInput,
+          functionId = settings.functionId,
+          detectedFamily = settings.detectedFamily,
+        )
+      ) {
+        val target = rivaGrpcClient.parseTarget(settings.endpointInput)
+        val result =
+          rivaGrpcClient.transcribe(
+            rawInput = settings.endpointInput,
+            wavBytes = wavBytes,
+            apiKey = settings.effectiveApiKey,
+            functionId = settings.functionId,
+            modelName = settings.effectiveModelName,
+            language = settings.language,
+            validatedOverrideIp = validatedIp,
+            ignoreSsl = settings.ignoreSsl,
+            preferStreaming = settings.liveTranscription && onPartialText != null,
+            onPartialText = onPartialText,
+            timeoutMs = TRANSCRIBE_READ_TIMEOUT_MS,
+          )
+        if (result is TranscribeResult.Success && target != null && !settings.hasValidCachedEndpoint) {
+          onEndpointDetected(target.canonicalUrl, ServerFamily.NVIDIA_RIVA_GRPC)
+          return@withContext result.copy(refreshedEndpoint = true)
+        }
+        return@withContext result
+      }
+
       var targetUrl = settings.detectedEndpointUrl
       var targetFamily = settings.detectedFamily
       var refreshed = false
@@ -1269,6 +1349,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
               useIpOverride = settings.useIpOverride,
               overrideIp = settings.overrideIp,
               ignoreSsl = settings.ignoreSsl,
+              functionId = settings.functionId,
             )
         ) {
           is ProbeResult.Success -> {
@@ -1573,6 +1654,8 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
         logicalUrl = "${url}${separator}output=json&task=transcribe$langQuery"
         fileFieldName = "audio_file"
       }
+      ServerFamily.NVIDIA_RIVA_GRPC ->
+        throw IOException("gRPC endpoints are handled by RivaGrpcClient.")
     }
 
     val target = resolveTarget(logicalUrl, validatedOverrideIp)

@@ -89,18 +89,22 @@ endpoint** that you choose and gets the text back. Any service that speaks the c
   `/inference` and whisper-asr-webservice `/asr` paths.
 - **A hosted service** with an OpenAI-compatible transcription API and an API key.
 
-In the app: **Settings > 1. Transcription Endpoint**, type the address (for example
-`http://<your-server>:<port>` at home, always `https://...` for a service on the internet), turn on
-**Provide API key** if the service needs one, then press **Test Connection**. The endpoint must answer
-with JSON (`{"text": "..."}`) and, for the first test, accept the model name `whisper-1`; after a
-successful test you can pick or type another model under **Pick custom model / endpoint**.
+In the app: **Settings > 2. Transcription Endpoints**, type the address (for example
+`http://<your-server>:<port>` at home, always `https://...` for a hosted OpenAI-compatible HTTP
+service, or `grpc.nvcf.nvidia.com:443` for NVIDIA Cloud gRPC), turn off **API key not needed** if
+the service needs a Bearer key, then press **Test Connection**. HTTP endpoints must answer with JSON
+(`{"text": "..."}`); after a successful test you can pick or type another model under **Pick custom
+model / endpoint**.
 
-**NVIDIA build.nvidia.com** gives a free trial API key. The default NVIDIA endpoint is
-`https://integrate.api.nvidia.com/v1` with default model `parakeet` (automatically selecting the
-highest-numbered Parakeet version returned by `/v1/models`), pre-configured as an inactive **NVIDIA**
-entry in **Settings > 1. Configuration Sets** — edit it to paste your `nvapi-…` key to activate it.
-Some NVIDIA speech models on `build.nvidia.com` instead expose per-model
-`*.invocation.api.nvcf.nvidia.com` HTTP URLs or are gRPC-only (requiring a proxy such as LiteLLM).
+**NVIDIA build.nvidia.com** gives a free trial API key. Note that NVIDIA's OpenAI-style REST base
+(`https://integrate.api.nvidia.com/v1`) only serves chat/translation models and returns `404` on
+`/v1/audio/transcriptions` — NVIDIA's hosted cloud speech-to-text (Parakeet / Riva / Whisper) runs
+over **gRPC + TLS** at `grpc.nvcf.nvidia.com:443` with a per-model `function-id` metadata header.
+This app supports NVIDIA Riva gRPC natively: the built-in **NVIDIA** endpoint preset is pre-configured
+with `grpc.nvcf.nvidia.com:443` and **Parakeet 1.1B Multilingual** (`71203149-d3b7-4460-8231-1be2543a1fca`,
+supporting Polish, English, and 23 other languages). Edit the **NVIDIA** endpoint preset in
+**Settings > 2. Transcription Endpoints**, paste your `nvapi-…` key, and press **Done** (or switch
+to another Parakeet / custom `function-id`).
 
 Details, examples and the NVIDIA steps: [`docs/ENDPOINTS.md`](docs/ENDPOINTS.md).
 

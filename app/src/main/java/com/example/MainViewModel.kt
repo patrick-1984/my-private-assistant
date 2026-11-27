@@ -20,6 +20,7 @@ import com.example.data.EndpointPreset
 import com.example.data.EndpointSlot
 import com.example.data.LanguageOption
 import com.example.data.MicSource
+import com.example.data.NvidiaFunctionPreset
 import com.example.data.SettingsRepository
 import com.example.handoff.AppHandoff
 import com.example.handoff.HandoffMethod
@@ -1076,15 +1077,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     _uiState.update { state ->
       val page = state.settingsPage as? SettingsPage.EditEndpoint ?: return@update state
       val draft = page.draft
-      val nextCacheKey =
-        "${trimmed.trim()}|${draft.useIpOverride}|${draft.overrideIp.trim()}|${draft.ignoreSsl}"
-      val keepDetected = draft.detectedForInput == nextCacheKey
+      val updatedDraft = draft.copy(endpointInput = trimmed)
+      val keepDetected = draft.detectedForInput == updatedDraft.cacheKey
       state.copy(
         settingsPage =
           page.copy(
             draft =
-              draft.copy(
-                endpointInput = trimmed,
+              updatedDraft.copy(
                 detectedEndpointUrl = if (keepDetected) draft.detectedEndpointUrl else "",
                 detectedFamily = if (keepDetected) draft.detectedFamily else null,
                 detectedForInput = if (keepDetected) draft.detectedForInput else "",
@@ -1152,6 +1151,62 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           ),
         testStatus = TestStatus.Idle,
         availableModels = emptyList(),
+      )
+    }
+  }
+
+  fun setFunctionId(functionId: String) {
+    val clean = functionId.trimStart()
+    _uiState.update { state ->
+      val page = state.settingsPage as? SettingsPage.EditEndpoint ?: return@update state
+      val draft = page.draft
+      val updated = draft.copy(functionId = clean)
+      val keepDetected = draft.detectedForInput == updated.cacheKey
+      state.copy(
+        settingsPage =
+          page.copy(
+            draft =
+              updated.copy(
+                detectedEndpointUrl = if (keepDetected) draft.detectedEndpointUrl else "",
+                detectedFamily = if (keepDetected) draft.detectedFamily else null,
+                detectedForInput = if (keepDetected) draft.detectedForInput else "",
+              )
+          ),
+        testStatus = TestStatus.Idle,
+      )
+    }
+  }
+
+  fun applyNvidiaCloudPreset(preset: NvidiaFunctionPreset?) {
+    val chosen = preset ?: EndpointPreset.NVIDIA_FUNCTION_PRESETS.first()
+    _uiState.update { state ->
+      val page = state.settingsPage as? SettingsPage.EditEndpoint ?: return@update state
+      val draft = page.draft
+      val nextEndpoint =
+        if (draft.endpointInput.isBlank() || !draft.isGrpcEndpoint) {
+          EndpointPreset.NVIDIA_ENDPOINT_URL
+        } else {
+          draft.endpointInput
+        }
+      val nextName = if (draft.customName.isBlank()) "NVIDIA" else draft.customName
+      state.copy(
+        settingsPage =
+          page.copy(
+            draft =
+              draft.copy(
+                customName = nextName,
+                endpointInput = nextEndpoint,
+                functionId = chosen.functionId,
+                apiKeyNotNeeded = false,
+                useCustomModel = true,
+                modelName = EndpointPreset.NVIDIA_DEFAULT_MODEL,
+                liveTranscription = true,
+                detectedEndpointUrl = "",
+                detectedFamily = null,
+                detectedForInput = "",
+              )
+          ),
+        testStatus = TestStatus.Idle,
       )
     }
   }
@@ -1364,6 +1419,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           useIpOverride = probeTarget.useIpOverride,
           overrideIp = probeTarget.overrideIp,
           ignoreSsl = probeTarget.ignoreSsl,
+          functionId = probeTarget.functionId,
         )
       _uiState.update { it.copy(availableModels = models, isFetchingModels = false) }
     }
@@ -1399,6 +1455,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           useIpOverride = current.useIpOverride,
           overrideIp = current.overrideIp,
           ignoreSsl = current.ignoreSsl,
+          functionId = current.functionId,
         )
       when (probe) {
         is ProbeResult.Success -> {

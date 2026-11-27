@@ -592,7 +592,8 @@ private fun EndpointPresetRow(
   val validHealth = healthRecord?.takeIf { it.fingerprint == endpoint.healthFingerprint }
   val modelLabel = if (endpoint.useCustomModel) endpoint.modelName else "whisper-1"
   val modeLabel = if (endpoint.liveTranscription) "Live" else "Batch"
-  val summary = "$modelLabel • $modeLabel • ${endpoint.endpointInput.ifBlank { endpoint.overrideIp }}"
+  val protoLabel = if (endpoint.isGrpcEndpoint) "gRPC • " else ""
+  val summary = "$protoLabel$modelLabel • $modeLabel • ${endpoint.endpointInput.ifBlank { endpoint.overrideIp }}"
 
   Surface(
     shape = RoundedCornerShape(16.dp),

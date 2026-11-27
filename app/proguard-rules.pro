@@ -19,3 +19,17 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# gRPC OkHttp + ServiceLoader providers for release minification
+-keepclassmembers,allowoptimization class io.grpc.okhttp.OkHttpChannelProvider {
+    <init>();
+}
+-keep class io.grpc.okhttp.OkHttpChannelProvider { *; }
+-keep class * extends io.grpc.ManagedChannelProvider { *; }
+-keep class * extends io.grpc.NameResolverProvider { *; }
+-keep class * extends io.grpc.LoadBalancerProvider { *; }
+-dontwarn sun.misc.Unsafe
+-dontwarn javax.naming.**
+-dontwarn org.codehaus.mojo.animal_sniffer.**
+-dontwarn com.google.errorprone.annotations.**
+
