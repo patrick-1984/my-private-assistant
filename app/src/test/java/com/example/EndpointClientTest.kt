@@ -431,11 +431,11 @@ class EndpointClientTest {
   }
 
   @Test
-  fun `nvidia catalog filters to speech models and works with default integrate api nvidia v1 and SSE streaming`() =
+  fun `nvidia catalog ranks parakeet highest version first and default parakeet resolves to highest number`() =
     runTest {
       val nvidiaBase = "https://integrate.api.nvidia.com/v1"
       val nvidiaBody =
-        """{"data":[{"id":"meta/llama-3.1-70b-instruct"},{"id":"mistralai/mixtral-8x7b"},{"id":"nvidia/parakeet-tdt-0.6b"},{"id":"openai/whisper-large-v3"},{"id":"nvidia/canary-1b"}]}"""
+        """{"data":[{"id":"meta/llama-3.1-70b-instruct"},{"id":"nvidia/parakeet-tdt-0.6b"},{"id":"nvidia/parakeet-tdt-0.6b-v2"},{"id":"nvidia/parakeet-tdt-0.6b-v10"},{"id":"nvidia/parakeet-tdt-0.6b-v3"},{"id":"openai/whisper-large-v3"},{"id":"nvidia/canary-1b"}]}"""
       val transport =
         FakeTransport(
           getHandler = { url, headers, _, _ ->
@@ -451,7 +451,7 @@ class EndpointClientTest {
           handler = { url, headers, _, fields, _ ->
             assertEquals("$nvidiaBase/audio/transcriptions", url)
             assertEquals("Bearer nvapi-secret-key", headers["Authorization"])
-            assertEquals("nvidia/parakeet-tdt-0.6b", fields["model"])
+            assertEquals("nvidia/parakeet-tdt-0.6b-v10", fields["model"])
             assertEquals("pl-PL", fields["language"])
             if (fields["stream"] == "true") {
               HttpResponseData(
@@ -470,11 +470,14 @@ class EndpointClientTest {
         )
       val client = EndpointClient(transport)
       val nvidiaSettings =
-        com.example.data.EndpointProfile.defaultNvidiaProfile()
-          .copy(apiKey = "nvapi-secret-key", language = LanguageOption.POLISH)
-          .toProbeSettings()
+        com.example.data.EndpointPreset.defaultNvidiaPreset()
+          .copy(apiKey = "nvapi-secret-key")
+          .toProbeSettings(
+            com.example.data.AppSettingsPreset.defaultPreset().copy(language = LanguageOption.POLISH)
+          )
 
       assertEquals("https://integrate.api.nvidia.com/v1", nvidiaSettings.endpointInput)
+      assertEquals("parakeet", nvidiaSettings.effectiveModelName)
 
       val probe =
         client.detectEndpoint(
@@ -485,7 +488,14 @@ class EndpointClientTest {
         )
       assertTrue(probe is ProbeResult.Success)
       assertEquals(
-        listOf("nvidia/parakeet-tdt-0.6b", "openai/whisper-large-v3", "nvidia/canary-1b"),
+        listOf(
+          "nvidia/parakeet-tdt-0.6b-v10",
+          "nvidia/parakeet-tdt-0.6b-v3",
+          "nvidia/parakeet-tdt-0.6b-v2",
+          "nvidia/parakeet-tdt-0.6b",
+          "openai/whisper-large-v3",
+          "nvidia/canary-1b",
+        ),
         (probe as ProbeResult.Success).availableModels,
       )
 
@@ -523,7 +533,7 @@ class EndpointClientTest {
       }
       val client = EndpointClient(transport)
       val settings =
-        com.example.data.EndpointProfile.defaultNvidiaProfile()
+        com.example.data.EndpointPreset.defaultNvidiaPreset()
           .copy(apiKey = "nvapi-test", useCustomModel = true, liveTranscription = true)
           .toProbeSettings()
 
@@ -538,5 +548,42 @@ class EndpointClientTest {
       assertTrue(res is TranscribeResult.Success)
       assertEquals("fallback worked", (res as TranscribeResult.Success).text)
       assertEquals(3, seenFields.size)
+    }
+
+  @Test
+  fun `quickHealthCheck uses lightweight GET models without sending audio and detects failures`() =
+    runTest {
+      var getStatus = 200
+      val transport =
+        FakeTransport(
+          getHandler = { _, _, _, _ ->
+            if (getStatus == 0) throw IOException("Connection timed out")
+            HttpResponseData(getStatus, """{"data":[{"id":"whisper-1"}]}""")
+          },
+          handler = { _, _, _, _, _ ->
+            throw AssertionError("Audio POST should not be sent when GET /v1/models succeeds")
+          },
+        )
+      val client = EndpointClient(transport)
+      val ep =
+        com.example.data.EndpointPreset(
+          endpointInput = "https://stt.example.com/v1",
+          apiKey = "sk-test",
+          detectedEndpointUrl = "https://stt.example.com/v1/audio/transcriptions",
+          detectedFamily = ServerFamily.OPENAI_V1,
+          detectedForInput = "https://stt.example.com/v1|false||false",
+        ).toProbeSettings()
+
+      val ok = client.quickHealthCheck(ep)
+      assertTrue(ok is com.example.network.HealthCheckResult.Healthy)
+      assertEquals(listOf("GET:https://stt.example.com/v1/models"), transport.calledUrls)
+
+      getStatus = 503
+      val err503 = client.quickHealthCheck(ep)
+      assertTrue(err503 is com.example.network.HealthCheckResult.Unhealthy)
+
+      getStatus = 0
+      val errIo = client.quickHealthCheck(ep)
+      assertTrue(errIo is com.example.network.HealthCheckResult.Unhealthy)
     }
 }

@@ -552,17 +552,30 @@ internal fun VerificationBadge(status: AppHandoffStatus) {
       AppHandoffStatus.UNKNOWN -> Triple(TvSurface, TvOutline, TvTextSecondary)
     }
 
+  SmallStatusChip(text = status.label, bg = bg, border = border, fg = fg)
+}
+
+@Composable
+internal fun SmallStatusChip(
+  text: String,
+  bg: Color,
+  border: Color,
+  fg: Color,
+  modifier: Modifier = Modifier,
+) {
   Surface(
-    shape = RoundedCornerShape(10.dp),
+    shape = RoundedCornerShape(8.dp),
     color = bg,
     border = BorderStroke(1.dp, border),
+    modifier = modifier,
   ) {
     Text(
-      text = status.label,
+      text = text,
       style = MaterialTheme.typography.labelMedium,
       color = fg,
       maxLines = 1,
-      modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+      overflow = TextOverflow.Ellipsis,
+      modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
     )
   }
 }

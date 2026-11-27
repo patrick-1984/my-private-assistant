@@ -94,6 +94,7 @@ how long the free trial lasts are not published on an official page we could fin
 The default NVIDIA OpenAI-compatible API endpoint (pre-configured in the app's inactive **NVIDIA** Configuration Set) is:
 
 - Default NVIDIA endpoint: `https://integrate.api.nvidia.com/v1` (which resolves to `https://integrate.api.nvidia.com/v1/audio/transcriptions` and `https://integrate.api.nvidia.com/v1/models`)
+- Default model: `parakeet` — when querying `/v1/models`, the app keeps `parakeet` as the default setting and automatically selects the highest-numbered `parakeet` version available (for example `nvidia/parakeet-tdt-0.6b-v3` or newer).
 
 Simply edit the pre-configured **NVIDIA** entry in **Settings > 1. Configuration Sets**, paste your `nvapi-…` API key, and press **Done** (or **Test Connection**).
 
@@ -101,14 +102,14 @@ If a specific speech model page on `build.nvidia.com` (filter **ASR**, click the
 
 | Model (API tab) | Protocol | Usable by this app directly? |
 |---|---|---|
-| Unified OpenAI-compatible NVIDIA base | HTTP `POST https://integrate.api.nvidia.com/v1/audio/transcriptions`, multipart, Bearer key | **Default preset** in the app (`nvidia/parakeet-tdt-0.6b`) |
+| Unified OpenAI-compatible NVIDIA base | HTTP `POST https://integrate.api.nvidia.com/v1/audio/transcriptions`, multipart, Bearer key | **Default preset** in the app (`parakeet` -> newest version) |
 | [parakeet-tdt-0.6b](https://build.nvidia.com/nvidia/parakeet-tdt-0_6b/api) (25 European languages, including Polish) | HTTP `POST .../v1/audio/transcriptions`, multipart, Bearer key | Yes (`https://2b940e91-a70e-4483-a958-d50408b96589.invocation.api.nvcf.nvidia.com`) |
 | [parakeet-ctc-1.1b-asr](https://build.nvidia.com/nvidia/parakeet-ctc-1_1b-asr/api) (English) | HTTP `POST .../v1/audio/transcriptions`, multipart, Bearer key | Yes (`https://1598d209-5e27-4d3c-8079-4751568b1081.invocation.api.nvcf.nvidia.com`) |
 | [whisper-large-v3](https://build.nvidia.com/openai/whisper-large-v3/api), [canary-1b-asr](https://build.nvidia.com/nvidia/canary-1b-asr/api), parakeet-tdt-0.6b-v2, parakeet-1.1b-rnnt-multilingual and others | **gRPC only** (`grpc.nvcf.nvidia.com:443` with a `function-id` header) | **No.** Use a proxy (below) |
 
 ### Testing from a computer
 
-For NVIDIA NIM / HTTP ASR endpoints, the app sends BCP-47 language codes (`multi`, `pl-PL`, `en-US`) and omits the default `whisper-1` placeholder unless you select a specific model ID (with automatic fallback if a deployment rejects `model` or `stream`). You can test the default NVIDIA endpoint from macOS or Linux without saving the key in shell history:
+For NVIDIA NIM / HTTP ASR endpoints, the app sends BCP-47 language codes (`multi`, `pl-PL`, `en-US`) and resolves `parakeet` to the highest-numbered `parakeet` model in `/v1/models` (or falls back cleanly if a deployment rejects `model` or `stream`). You can test the default NVIDIA endpoint from macOS or Linux without saving the key in shell history:
 
 ```sh
 read -rs NVIDIA_API_KEY && export NVIDIA_API_KEY

@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ui.screens.SearchScreen
+import com.example.ui.screens.SettingsActions
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.TvVoiceSearchTheme
 
@@ -79,7 +80,7 @@ class MainActivity : ComponentActivity() {
 
         BackHandler {
           if (state.isSettingsOpen) {
-            viewModel.closeSettings()
+            viewModel.navigateSettingsBack()
           } else {
             finish()
           }
@@ -89,36 +90,53 @@ class MainActivity : ComponentActivity() {
           if (state.isSettingsOpen) {
             SettingsScreen(
               state = state,
-              onBack = { viewModel.closeSettings() },
-              onStartNewProfile = { viewModel.startNewProfileDraft() },
-              onEditProfile = { viewModel.editProfile(it) },
-              onActivateProfile = { viewModel.activateProfile(it) },
-              onDeleteProfile = { viewModel.deleteProfile(it) },
-              onSaveProfileDone = { viewModel.saveProfileDraftAndDone() },
-              onCancelProfileDraft = { viewModel.cancelProfileDraft() },
-              onProfileNameChange = { viewModel.updateProfileName(it) },
-              onEndpointChange = { viewModel.updateEndpointInput(it) },
-              onToggleIpOverride = { viewModel.setUseIpOverride(it) },
-              onOverrideIpChange = { viewModel.updateOverrideIp(it) },
-              onToggleIgnoreSsl = { viewModel.setIgnoreSsl(it) },
-              onToggleApiKeyNotNeeded = { viewModel.setApiKeyNotNeeded(it) },
-              onTestEndpoint = { viewModel.testEndpoint() },
-              onToggleCustomModel = { viewModel.setUseCustomModel(it) },
-              onRefreshModels = { viewModel.refreshAvailableModels() },
-              onToggleLiveTranscription = { viewModel.setLiveTranscription(it) },
-              onToggleSearchInCurrentApp = { viewModel.setSearchInCurrentApp(it) },
-              onSelectTargetApp = { viewModel.selectTargetApp(it) },
-              onTestAppSearch = { viewModel.testAppSearch(it) },
-              onConfirmAppTest = { viewModel.confirmAppTestResult(it) },
-              onDismissPendingVerification = { viewModel.dismissPendingVerification() },
-              onToggleNeverUseApp = { viewModel.toggleNeverUseApp(it) },
-              onSelectLanguage = { viewModel.setLanguage(it) },
-              onApiKeyChange = { viewModel.setApiKey(it) },
-              onModelNameChange = { viewModel.setModelName(it) },
-              onSelectMicSource = { viewModel.setMicSource(it) },
-              onToggleMicCapture = { viewModel.setMicButtonCapture(it) },
-              onRefreshAssistantStatus = { viewModel.refreshAssistantStatus() },
-              onCopyAdbCommand = { label, cmd -> viewModel.copyToClipboard(label, cmd) },
+              actions =
+                SettingsActions(
+                  onBack = { viewModel.navigateSettingsBack() },
+                  onStartNewConfig = { viewModel.startNewConfigurationDraft() },
+                  onEditConfig = { viewModel.editConfiguration(it) },
+                  onActivateConfig = { viewModel.activateConfiguration(it) },
+                  onDeleteConfig = { viewModel.deleteConfiguration(it) },
+                  onConfigNameChange = { viewModel.updateConfigDraftName(it) },
+                  onConfigFailoverToggle = { viewModel.setConfigDraftFailover(it) },
+                  onSelectConfigSlot = { slot, id -> viewModel.selectConfigDraftSlot(slot, id) },
+                  onSelectConfigAppPreset = { viewModel.selectConfigDraftAppPreset(it) },
+                  onSaveConfigDone = { viewModel.saveConfigurationDraftDone() },
+                  onCancelSubPage = { viewModel.navigateSettingsBack() },
+                  onStartNewEndpoint = { slot -> viewModel.startNewEndpointDraft(slot) },
+                  onEditEndpoint = { viewModel.editEndpoint(it) },
+                  onDeleteEndpoint = { viewModel.deleteEndpoint(it) },
+                  onCheckEndpointHealth = { viewModel.checkEndpointHealthNow(it) },
+                  onEndpointNameChange = { viewModel.updateEndpointName(it) },
+                  onEndpointUrlChange = { viewModel.updateEndpointInput(it) },
+                  onToggleIpOverride = { viewModel.setUseIpOverride(it) },
+                  onOverrideIpChange = { viewModel.updateOverrideIp(it) },
+                  onToggleIgnoreSsl = { viewModel.setIgnoreSsl(it) },
+                  onToggleApiKeyNotNeeded = { viewModel.setApiKeyNotNeeded(it) },
+                  onApiKeyChange = { viewModel.setApiKey(it) },
+                  onTestEndpoint = { viewModel.testEndpoint() },
+                  onToggleCustomModel = { viewModel.setUseCustomModel(it) },
+                  onRefreshModels = { viewModel.refreshAvailableModels() },
+                  onModelNameChange = { viewModel.setModelName(it) },
+                  onToggleLiveTranscription = { viewModel.setLiveTranscription(it) },
+                  onSaveEndpointDone = { viewModel.saveEndpointDraftDone() },
+                  onStartNewAppPreset = { assign -> viewModel.startNewAppPresetDraft(assign) },
+                  onEditAppPreset = { viewModel.editAppPreset(it) },
+                  onDeleteAppPreset = { viewModel.deleteAppPreset(it) },
+                  onAppPresetNameChange = { viewModel.updateAppPresetName(it) },
+                  onToggleSearchInCurrentApp = { viewModel.setSearchInCurrentApp(it) },
+                  onSelectTargetApp = { viewModel.selectTargetApp(it) },
+                  onTestAppSearch = { viewModel.testAppSearch(it) },
+                  onConfirmAppTest = { viewModel.confirmAppTestResult(it) },
+                  onDismissPendingVerification = { viewModel.dismissPendingVerification() },
+                  onToggleNeverUseApp = { viewModel.toggleNeverUseApp(it) },
+                  onSelectLanguage = { viewModel.setLanguage(it) },
+                  onSelectMicSource = { viewModel.setMicSource(it) },
+                  onSaveAppPresetDone = { viewModel.saveAppPresetDraftDone() },
+                  onToggleMicCapture = { viewModel.setMicButtonCapture(it) },
+                  onRefreshAssistantStatus = { viewModel.refreshAssistantStatus() },
+                  onCopyAdbCommand = { label, cmd -> viewModel.copyToClipboard(label, cmd) },
+                ),
             )
           } else {
             SearchScreen(

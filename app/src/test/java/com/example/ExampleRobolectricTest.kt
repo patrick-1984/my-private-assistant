@@ -18,10 +18,15 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.test.core.app.ApplicationProvider
-import com.example.data.ActivateProfileResult
+import com.example.data.ActivateConfigResult
 import com.example.data.AppHandoffStatus
 import com.example.data.AppSettings
-import com.example.data.EndpointProfile
+import com.example.data.AppSettingsPreset
+import com.example.data.ConfigurationPreset
+import com.example.data.EndpointHealthRecord
+import com.example.data.EndpointHealthStatus
+import com.example.data.EndpointPreset
+import com.example.data.EndpointSlot
 import com.example.data.LanguageOption
 import com.example.data.ServerFamily
 import com.example.data.SettingsRepository
@@ -31,6 +36,7 @@ import com.example.handoff.HandoffMethod
 import com.example.handoff.HandoffResult
 import com.example.handoff.InstalledTvApp
 import com.example.ui.screens.SearchScreen
+import com.example.ui.screens.SettingsActions
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.TvVoiceSearchTheme
 import org.junit.Assert.assertEquals
@@ -66,18 +72,29 @@ class ExampleRobolectricTest {
   }
 
   @Test
-  fun `MainActivity opens SettingsScreen cleanly with Configuration Sets and NVIDIA preset`() {
+  fun `MainActivity opens SettingsScreen cleanly with Configuration Presets and NVIDIA preset`() {
     val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
     val activity = controller.get()
     assertNotNull(activity)
-    // Open settings button on SearchScreen and assert Configuration Sets UI loads without crashing
     composeTestRule.waitForIdle()
   }
 
   @Test
-  fun `SearchScreen displays lean pill bar, active current app target, and fallback picker on failure`() {
+  fun `SearchScreen displays active configuration set pill, failover slot badge, and fallback picker`() {
     val smartTube = InstalledTvApp(AppHandoff.PKG_SMARTTUBE, "SmartTube", HandoffMethod.SMARTTUBE_URI, null)
     val newPipe = InstalledTvApp(AppHandoff.PKG_NEWPIPE, "NewPipe", HandoffMethod.NEWPIPE_SHARE, null)
+    val epPrimary = EndpointPreset.defaultNvidiaPreset().copy(apiKey = "nvapi-ok")
+    val epBackup = EndpointPreset(id = "lan_1", customName = "LAN Whisper", endpointInput = "http://10.3.3.20:8000", apiKeyNotNeeded = true)
+    val appPreset = AppSettingsPreset.defaultPreset()
+    val cfg =
+      ConfigurationPreset(
+        id = "cfg_main",
+        customName = "Living Room",
+        primaryEndpointId = epPrimary.id,
+        secondaryEndpointId = epBackup.id,
+        appSettingsPresetId = appPreset.id,
+        allowEndpointFailover = true,
+      )
     var selectedFallback: InstalledTvApp? = null
 
     composeTestRule.setContent {
@@ -91,12 +108,18 @@ class ExampleRobolectricTest {
               activeSourcePackage = AppHandoff.PKG_NEWPIPE,
               showFallbackAppPicker = true,
               installedApps = listOf(smartTube, newPipe),
+              activeUsedSlot = EndpointSlot.SECONDARY,
+              activeUsedEndpointId = epBackup.id,
               settings =
                 AppSettings(
-                  endpointInput = "https://stt.example.com",
+                  endpointInput = epPrimary.endpointInput,
                   searchInCurrentApp = true,
                   targetPackage = AppHandoff.PKG_SMARTTUBE,
                   targetLabel = "SmartTube",
+                  endpointPresets = listOf(epPrimary, epBackup),
+                  appSettingsPresets = listOf(appPreset),
+                  configurationPresets = listOf(cfg),
+                  activeConfigurationId = cfg.id,
                 ),
             ),
           hasMicPermission = true,
@@ -111,6 +134,9 @@ class ExampleRobolectricTest {
       }
     }
     composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("active_set_pill").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("active_set_label").assertTextContains("Living Room • LAN Whisper")
+    composeTestRule.onNodeWithTag("active_slot_badge").assertTextContains("Secondary (failover)")
     composeTestRule.onNodeWithTag("mic_button").assertIsDisplayed()
     composeTestRule.onNodeWithTag("search_input").assertIsDisplayed()
     composeTestRule.onNodeWithTag("settings_button").assertIsDisplayed()
@@ -123,7 +149,7 @@ class ExampleRobolectricTest {
   }
 
   @Test
-  fun `SearchScreen shows concise error status without fallback picker when endpoint is not set`() {
+  fun `SearchScreen shows concise error status without active set pill when unconfigured`() {
     composeTestRule.setContent {
       TvVoiceSearchTheme {
         SearchScreen(
@@ -140,34 +166,31 @@ class ExampleRobolectricTest {
       }
     }
     composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("active_set_pill").assertDoesNotExist()
     composeTestRule.onNodeWithTag("status_text").assertIsDisplayed()
     composeTestRule.onNodeWithTag("fallback_picker_container").assertDoesNotExist()
   }
 
   @Test
-  fun `SettingsScreen displays Configuration Sets, icon buttons, Editor with Name and Done, and privacy note`() {
-    val nvidia = EndpointProfile.defaultNvidiaProfile()
-    val localDraft =
-      EndpointProfile(
+  fun `SettingsScreen Home displays separated Configuration, Endpoint, and App Presets`() {
+    val nvidia = EndpointPreset.defaultNvidiaPreset()
+    val localEp =
+      EndpointPreset(
         id = "local_1",
-        customName = "",
+        customName = "LAN Whisper",
         endpointInput = "https://stt.example.com",
-        useIpOverride = true,
-        overrideIp = "10.3.3.20",
-        ignoreSsl = true,
-        apiKey = "sk-123",
-        apiKeyNotNeeded = false,
-        useCustomModel = true,
-        modelName = "whisper-1",
-        liveTranscription = true,
-        detectedEndpointUrl = "https://stt.example.com/v1/audio/transcriptions",
-        detectedFamily = ServerFamily.OPENAI_V1,
-        detectedForInput = "https://stt.example.com|true|10.3.3.20|true",
+        apiKeyNotNeeded = true,
       )
-    val smartTube = InstalledTvApp(AppHandoff.PKG_SMARTTUBE, "SmartTube", HandoffMethod.SMARTTUBE_URI, null)
-    val newPipe = InstalledTvApp(AppHandoff.PKG_NEWPIPE, "NewPipe", HandoffMethod.NEWPIPE_SHARE, null)
-    var confirmed: Boolean? = null
-    var doneClicked = false
+    val defaultApp = AppSettingsPreset.defaultPreset()
+    val cfg =
+      ConfigurationPreset(
+        id = "cfg_1",
+        customName = "Home Failover",
+        primaryEndpointId = localEp.id,
+        secondaryEndpointId = nvidia.id,
+        appSettingsPresetId = defaultApp.id,
+        allowEndpointFailover = true,
+      )
 
     composeTestRule.setContent {
       TvVoiceSearchTheme {
@@ -175,98 +198,51 @@ class ExampleRobolectricTest {
           state =
             MainUiState(
               isSettingsOpen = true,
-              testStatus = TestStatus.Ok("Connected"),
-              availableModels = listOf("whisper-1", "Systran/faster-whisper-large-v3"),
-              profileDraft = localDraft,
-              isDraftNew = false,
+              settingsPage = SettingsPage.Home,
               profileBanner = "API key needed for \"NVIDIA\".",
               isProfileBannerError = true,
-              pendingVerificationApp = newPipe,
-              installedApps = listOf(smartTube, newPipe),
+              endpointHealthRecords =
+                mapOf(
+                  localEp.id to
+                    EndpointHealthRecord(
+                      status = EndpointHealthStatus.HEALTHY,
+                      fingerprint = localEp.healthFingerprint,
+                    )
+                ),
               settings =
                 AppSettings(
-                  endpointInput = localDraft.endpointInput,
-                  useIpOverride = true,
-                  overrideIp = "10.3.3.20",
-                  ignoreSsl = true,
-                  useApiKey = true,
-                  useCustomModel = true,
-                  liveTranscription = true,
+                  endpointInput = localEp.endpointInput,
                   micButtonCapture = true,
-                  searchInCurrentApp = true,
-                  appHandoffStatuses = mapOf(AppHandoff.PKG_SMARTTUBE to AppHandoffStatus.CONFIRMED),
-                  profiles = listOf(nvidia, localDraft),
-                  activeProfileId = localDraft.id,
+                  endpointPresets = listOf(nvidia, localEp),
+                  appSettingsPresets = listOf(defaultApp),
+                  configurationPresets = listOf(cfg),
+                  activeConfigurationId = cfg.id,
                 ),
             ),
-          onBack = {},
-          onStartNewProfile = {},
-          onEditProfile = {},
-          onActivateProfile = {},
-          onDeleteProfile = {},
-          onSaveProfileDone = { doneClicked = true },
-          onCancelProfileDraft = {},
-          onProfileNameChange = {},
-          onEndpointChange = {},
-          onToggleIpOverride = {},
-          onOverrideIpChange = {},
-          onToggleIgnoreSsl = {},
-          onToggleApiKeyNotNeeded = {},
-          onTestEndpoint = {},
-          onToggleCustomModel = {},
-          onRefreshModels = {},
-          onToggleLiveTranscription = {},
-          onToggleSearchInCurrentApp = {},
-          onSelectTargetApp = {},
-          onTestAppSearch = {},
-          onConfirmAppTest = { confirmed = it },
-          onDismissPendingVerification = {},
-          onToggleNeverUseApp = {},
-          onSelectLanguage = {},
-          onApiKeyChange = {},
-          onModelNameChange = {},
-          onSelectMicSource = {},
-          onToggleMicCapture = {},
-          onRefreshAssistantStatus = {},
-          onCopyAdbCommand = { _, _ -> },
+          actions = SettingsActions(),
         )
       }
     }
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("settings_back_button").assertIsDisplayed()
     composeTestRule.onNodeWithTag("profile_banner_text").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("profile_row_${EndpointProfile.NVIDIA_PRESET_ID}").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("activate_profile_${EndpointProfile.NVIDIA_PRESET_ID}").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("edit_profile_${EndpointProfile.NVIDIA_PRESET_ID}").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("delete_profile_${EndpointProfile.NVIDIA_PRESET_ID}").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("add_profile_button").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("config_row_${cfg.id}").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("activate_config_${cfg.id}").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("edit_config_${cfg.id}").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("delete_config_${cfg.id}").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("add_config_button").performScrollTo().assertIsDisplayed()
 
     composeTestRule
       .onNodeWithTag("settings_list")
-      .performScrollToNode(hasTestTag("profile_name_input"))
-    composeTestRule.onNodeWithTag("profile_name_input").performScrollTo().assertIsDisplayed()
-    composeTestRule.onNodeWithTag("endpoint_input").performScrollTo().assertIsDisplayed()
-    composeTestRule.onNodeWithTag("api_key_input").performScrollTo().assertIsDisplayed()
-    composeTestRule.onNodeWithTag("api_key_not_needed_checkbox").performScrollTo().assertIsDisplayed()
-    composeTestRule.onNodeWithTag("test_endpoint_button").performScrollTo().assertIsDisplayed()
-    composeTestRule.onNodeWithTag("live_transcription_checkbox").performScrollTo().assertIsDisplayed()
+      .performScrollToNode(hasTestTag("endpoint_row_${EndpointPreset.NVIDIA_PRESET_ID}"))
+    composeTestRule.onNodeWithTag("endpoint_row_${EndpointPreset.NVIDIA_PRESET_ID}").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("add_endpoint_button").performScrollTo().assertIsDisplayed()
 
     composeTestRule
       .onNodeWithTag("settings_list")
-      .performScrollToNode(hasTestTag("search_current_app_switch"))
-    composeTestRule.onNodeWithTag("search_current_app_switch").performScrollTo().assertIsDisplayed()
-
-    composeTestRule
-      .onNodeWithTag("settings_list")
-      .performScrollToNode(hasTestTag("pending_verification_banner"))
-    composeTestRule.onNodeWithTag("confirm_app_works_button").performScrollTo().performClick()
-    assertEquals(true, confirmed)
-
-    composeTestRule
-      .onNodeWithTag("settings_list")
-      .performScrollToNode(hasTestTag("profile_done_button"))
-    composeTestRule.onNodeWithTag("profile_done_button").performScrollTo().performClick()
-    assertTrue(doneClicked)
+      .performScrollToNode(hasTestTag("app_preset_row_${AppSettingsPreset.DEFAULT_APP_PRESET_ID}"))
+    composeTestRule.onNodeWithTag("app_preset_row_${AppSettingsPreset.DEFAULT_APP_PRESET_ID}").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("add_app_preset_button").performScrollTo().assertIsDisplayed()
 
     composeTestRule
       .onNodeWithTag("settings_list")
@@ -276,78 +252,139 @@ class ExampleRobolectricTest {
   }
 
   @Test
-  fun `SettingsRepository seeds inactive NVIDIA preset, enforces API key check on activate, and supports Done without test`() {
+  fun `SettingsScreen Configuration Editor shows failover switch, Primary Secondary Tertiary, and App Preset picker`() {
+    val nvidia = EndpointPreset.defaultNvidiaPreset()
+    val localEp = EndpointPreset(id = "local_1", customName = "LAN", endpointInput = "10.3.3.20:8000", apiKeyNotNeeded = true)
+    val defaultApp = AppSettingsPreset.defaultPreset()
+    val cfgDraft =
+      ConfigurationPreset(
+        id = "cfg_edit",
+        customName = "Multi",
+        primaryEndpointId = localEp.id,
+        secondaryEndpointId = nvidia.id,
+        appSettingsPresetId = defaultApp.id,
+        allowEndpointFailover = true,
+      )
+    var doneClicked = false
+
+    composeTestRule.setContent {
+      TvVoiceSearchTheme {
+        SettingsScreen(
+          state =
+            MainUiState(
+              isSettingsOpen = true,
+              settingsPage = SettingsPage.EditConfiguration(draft = cfgDraft, isNew = false),
+              settings =
+                AppSettings(
+                  endpointPresets = listOf(nvidia, localEp),
+                  appSettingsPresets = listOf(defaultApp),
+                  configurationPresets = listOf(cfgDraft),
+                ),
+            ),
+          actions = SettingsActions(onSaveConfigDone = { doneClicked = true }),
+        )
+      }
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("config_name_input").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("failover_switch").assertIsDisplayed()
+    composeTestRule
+      .onNodeWithTag("settings_list")
+      .performScrollToNode(hasTestTag("config_done_button"))
+    composeTestRule.onNodeWithTag("config_done_button").performScrollTo().performClick()
+    assertTrue(doneClicked)
+  }
+
+  @Test
+  fun `SettingsRepository separates endpoints and app presets, blocks NVIDIA without key, and supports multiple Config combinations`() {
     val context = ApplicationProvider.getApplicationContext<Context>()
     val repo = SettingsRepository.get(context)
 
-    // 1. Fresh install has NVIDIA preset inactive and activeProfileId == null
+    // 1. Fresh install has inactive Default config pointing to NVIDIA + Default TV app preset
     val initial = repo.settings.value
-    assertNull(initial.activeProfileId)
+    assertNull(initial.activeConfigurationId)
     assertEquals("", initial.endpointInput)
-    val nvidia = initial.profiles.firstOrNull { it.id == EndpointProfile.NVIDIA_PRESET_ID }
+    val nvidia = initial.endpointPresets.firstOrNull { it.id == EndpointPreset.NVIDIA_PRESET_ID }
     assertNotNull(nvidia)
     assertEquals("NVIDIA", nvidia!!.displayName)
-    assertEquals(EndpointProfile.NVIDIA_ENDPOINT_URL, nvidia.endpointInput)
-    assertEquals(EndpointProfile.NVIDIA_DEFAULT_MODEL, nvidia.modelName)
+    assertEquals(EndpointPreset.NVIDIA_ENDPOINT_URL, nvidia.endpointInput)
+    assertEquals(EndpointPreset.NVIDIA_DEFAULT_MODEL, nvidia.modelName)
     assertFalse(nvidia.apiKeyNotNeeded)
     assertTrue(nvidia.isMissingRequiredApiKey)
 
-    // 2. Activating NVIDIA without API key is blocked cleanly
-    val blockedAct = repo.activateProfile(nvidia.id)
-    assertTrue(blockedAct is ActivateProfileResult.MissingApiKey)
-    assertNull(repo.settings.value.activeProfileId)
+    // 2. Activating Default config without NVIDIA API key is blocked cleanly
+    val blockedAct = repo.activateConfigurationPreset(ConfigurationPreset.DEFAULT_CONFIG_ID)
+    assertTrue(blockedAct is ActivateConfigResult.MissingApiKey)
+    assertNull(repo.settings.value.activeConfigurationId)
 
-    // 3. Adding custom endpoint with no name auto-derives FQDN without https://, allows activation when apiKeyNotNeeded = true
-    val localProfile =
-      EndpointProfile(
+    // 3. Create independent LAN endpoint + custom Polish app preset, combine in a ConfigurationPreset
+    val localEndpoint =
+      EndpointPreset(
         id = "lan_whisper",
         customName = "",
         endpointInput = "https://whisper.home.lan:8443",
         useIpOverride = true,
         overrideIp = "10.3.3.20",
         apiKeyNotNeeded = true,
+      )
+    assertEquals("whisper.home.lan:8443 (10.3.3.20)", localEndpoint.displayName)
+    repo.saveEndpointPreset(localEndpoint, autoActivateIfNoActiveConfig = false)
+
+    val polishApp =
+      AppSettingsPreset(
+        id = "app_newpipe_pl",
+        customName = "NewPipe Polish",
         targetPackage = AppHandoff.PKG_NEWPIPE,
         targetLabel = "NewPipe",
         language = LanguageOption.POLISH,
       )
-    assertEquals("whisper.home.lan:8443 (10.3.3.20)", localProfile.displayName)
-    val saveOutcome = repo.saveProfile(localProfile, activateIfEligible = true)
-    assertTrue(saveOutcome is ActivateProfileResult.Activated)
-    assertEquals("lan_whisper", repo.settings.value.activeProfileId)
+    repo.saveAppPreset(polishApp)
+
+    val combo1 =
+      ConfigurationPreset(
+        id = "combo_1",
+        customName = "Polish Failover",
+        primaryEndpointId = localEndpoint.id,
+        secondaryEndpointId = nvidia.id,
+        appSettingsPresetId = polishApp.id,
+        allowEndpointFailover = true,
+      )
+    val saveOutcome = repo.saveConfigurationPreset(combo1, activateIfEligible = true)
+    assertTrue(saveOutcome is ActivateConfigResult.Activated)
+    assertEquals("combo_1", repo.settings.value.activeConfigurationId)
     assertEquals("https://whisper.home.lan:8443", repo.settings.value.endpointInput)
     assertEquals(AppHandoff.PKG_NEWPIPE, repo.settings.value.targetPackage)
     assertEquals(LanguageOption.POLISH, repo.settings.value.language)
 
-    // 4. Updating NVIDIA with API key lets it activate and switches active settings
-    val updatedNvidia = nvidia.copy(apiKey = "nvapi-valid-key")
-    val nvidiaSave = repo.saveProfile(updatedNvidia, activateIfEligible = true)
-    assertTrue(nvidiaSave is ActivateProfileResult.Activated)
-    assertEquals(nvidia.id, repo.settings.value.activeProfileId)
-    assertEquals(EndpointProfile.NVIDIA_ENDPOINT_URL, repo.settings.value.endpointInput)
+    // 4. Add NVIDIA API key -> Default config can now activate
+    repo.saveEndpointPreset(nvidia.copy(apiKey = "nvapi-valid-key"))
+    val nvidiaAct = repo.activateConfigurationPreset(ConfigurationPreset.DEFAULT_CONFIG_ID)
+    assertTrue(nvidiaAct is ActivateConfigResult.Activated)
+    assertEquals(ConfigurationPreset.DEFAULT_CONFIG_ID, repo.settings.value.activeConfigurationId)
+    assertEquals(EndpointPreset.NVIDIA_ENDPOINT_URL, repo.settings.value.endpointInput)
 
-    // 5. Switch back to LAN profile and delete custom profile cleanly
-    assertTrue(repo.activateProfile("lan_whisper") is ActivateProfileResult.Activated)
-    assertEquals("lan_whisper", repo.settings.value.activeProfileId)
-    repo.deleteProfile("lan_whisper")
-    assertNull(repo.settings.value.activeProfileId)
+    // 5. Switch back to combo_1 and delete custom configuration cleanly
+    assertTrue(repo.activateConfigurationPreset("combo_1") is ActivateConfigResult.Activated)
+    repo.deleteConfigurationPreset("combo_1")
+    assertNull(repo.settings.value.activeConfigurationId)
   }
 
   @Test
-  fun `EndpointProfile deriveDisplayName strips https, falls back to IP, and fits screen length`() {
+  fun `EndpointPreset deriveDisplayName strips https, falls back to IP, and fits screen length`() {
     assertEquals(
       "Custom Name",
-      EndpointProfile.deriveDisplayName("Custom Name", "https://example.com", false, ""),
+      EndpointPreset.deriveDisplayName("Custom Name", "https://example.com", false, ""),
     )
     assertEquals(
       "stt.internal.lan:8443",
-      EndpointProfile.deriveDisplayName("", "https://stt.internal.lan:8443/", false, ""),
+      EndpointPreset.deriveDisplayName("", "https://stt.internal.lan:8443/", false, ""),
     )
     assertEquals(
       "10.3.3.20",
-      EndpointProfile.deriveDisplayName("", "", true, "10.3.3.20"),
+      EndpointPreset.deriveDisplayName("", "", true, "10.3.3.20"),
     )
     val longName =
-      EndpointProfile.deriveDisplayName(
+      EndpointPreset.deriveDisplayName(
         "",
         "https://very-long-internal-whisper-transcription-server.tailscale.ts.net/v1/audio/transcriptions",
         false,

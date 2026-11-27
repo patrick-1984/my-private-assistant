@@ -9,6 +9,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -66,6 +67,7 @@ import androidx.compose.ui.unit.sp
 import com.example.MainUiState
 import com.example.R
 import com.example.VoicePhase
+import com.example.data.EndpointSlot
 import com.example.handoff.InstalledTvApp
 import com.example.ui.components.TvListeningBars
 import com.example.ui.components.TvPrimaryButton
@@ -74,6 +76,7 @@ import com.example.ui.theme.TvAmber
 import com.example.ui.theme.TvBackground
 import com.example.ui.theme.TvCoral
 import com.example.ui.theme.TvCyan
+import com.example.ui.theme.TvEmerald
 import com.example.ui.theme.TvOutline
 import com.example.ui.theme.TvSurface
 import com.example.ui.theme.TvSurfaceElevated
@@ -96,7 +99,7 @@ fun SearchScreen(
 ) {
   val micFocusRequester = remember { FocusRequester() }
   val settingsFocusRequester = remember { FocusRequester() }
-  val needsSetup = state.settings.endpointInput.isBlank()
+  val needsSetup = state.settings.orderedActiveEndpoints().isEmpty()
 
   LaunchedEffect(state.phase, state.isSettingsOpen, needsSetup) {
     if (!state.isSettingsOpen) {
@@ -127,6 +130,9 @@ fun SearchScreen(
       state.phase == VoicePhase.ERROR ||
       state.phase == VoicePhase.PERMISSION_NEEDED
   val showSubmitButton = state.searchText.isNotBlank() && state.phase != VoicePhase.LISTENING
+  val showActivePresetPill =
+    !needsSetup &&
+      (state.activeConfigDisplayName.isNotBlank() || state.activeEndpointDisplayName.isNotBlank())
 
   // Lean floating pill search bar anchored cleanly near top-center
   BoxWithConstraints(
@@ -134,7 +140,7 @@ fun SearchScreen(
     contentAlignment = Alignment.TopCenter,
   ) {
     val isCompact = maxWidth < 640.dp
-    val topInset = if (isCompact) 18.dp else 40.dp
+    val topInset = if (isCompact) 14.dp else 32.dp
     val sideInset = if (isCompact) 14.dp else 44.dp
     val micSize = if (isCompact) 50.dp else 54.dp
 
@@ -146,6 +152,19 @@ fun SearchScreen(
       horizontalAlignment = Alignment.CenterHorizontally,
       verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+      AnimatedVisibility(visible = showActivePresetPill) {
+        ActivePresetPill(
+          configName = state.activeConfigDisplayName,
+          endpointName = state.activeEndpointDisplayName,
+          slot = state.activeEndpointSlot,
+          showSlotTag = state.hasBackupEndpoints || state.isBackupEndpointActive,
+          isTranscribing =
+            state.phase == VoicePhase.TRANSCRIBING || state.phase == VoicePhase.LISTENING,
+          isCheckingHealth = state.isCheckingEndpointHealth,
+          modifier = Modifier.widthIn(max = 780.dp).testTag("active_set_pill"),
+        )
+      }
+
       Surface(
         shape = RoundedCornerShape(36.dp),
         color = TvSurface.copy(alpha = 0.96f),
@@ -177,6 +196,7 @@ fun SearchScreen(
             phase = state.phase,
             audioLevel = state.audioLevel,
             targetLabel = state.effectiveDisplayTargetLabel,
+            endpointLabel = state.activeEndpointDisplayName,
             onValueChange = onSearchTextChange,
             onSubmit = onSubmitSearch,
             modifier = Modifier.weight(1f).testTag("search_input"),
@@ -312,11 +332,88 @@ fun SearchScreen(
 }
 
 @Composable
+private fun ActivePresetPill(
+  configName: String,
+  endpointName: String,
+  slot: EndpointSlot,
+  showSlotTag: Boolean,
+  isTranscribing: Boolean,
+  isCheckingHealth: Boolean,
+  modifier: Modifier = Modifier,
+) {
+  val isBackup = slot != EndpointSlot.PRIMARY
+  val accentColor =
+    when {
+      isBackup -> TvAmber
+      isTranscribing -> TvCyan
+      else -> TvEmerald
+    }
+
+  Surface(
+    shape = RoundedCornerShape(999.dp),
+    color = TvSurface.copy(alpha = 0.90f),
+    border = BorderStroke(1.dp, accentColor.copy(alpha = if (isBackup || isTranscribing) 0.7f else 0.35f)),
+    tonalElevation = 4.dp,
+    modifier = modifier.pointerInput(Unit) { detectTapGestures {} },
+  ) {
+    Row(
+      modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      Box(
+        modifier =
+          Modifier.size(8.dp)
+            .background(color = accentColor, shape = CircleShape)
+      )
+      val titleText =
+        when {
+          configName.isNotBlank() && endpointName.isNotBlank() && configName != endpointName ->
+            "$configName • $endpointName"
+          endpointName.isNotBlank() -> endpointName
+          else -> configName
+        }
+      Text(
+        text = titleText,
+        style = MaterialTheme.typography.labelLarge.copy(fontSize = 13.sp, fontWeight = FontWeight.Medium),
+        color = TvTextPrimary,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.testTag("active_set_label"),
+      )
+      if (showSlotTag) {
+        Surface(
+          shape = RoundedCornerShape(999.dp),
+          color = accentColor.copy(alpha = 0.16f),
+          border = BorderStroke(1.dp, accentColor.copy(alpha = 0.55f)),
+        ) {
+          Text(
+            text = if (isBackup) "${slot.label} (failover)" else slot.label,
+            style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.sp),
+            color = accentColor,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp).testTag("active_slot_badge"),
+          )
+        }
+      }
+      if (isCheckingHealth) {
+        CircularProgressIndicator(
+          color = TvCyan,
+          strokeWidth = 2.dp,
+          modifier = Modifier.size(12.dp).testTag("health_check_spinner"),
+        )
+      }
+    }
+  }
+}
+
+@Composable
 private fun LeanSearchField(
   value: String,
   phase: VoicePhase,
   audioLevel: Float,
   targetLabel: String,
+  endpointLabel: String,
   onValueChange: (String) -> Unit,
   onSubmit: () -> Unit,
   modifier: Modifier = Modifier,
@@ -327,7 +424,8 @@ private fun LeanSearchField(
   val placeholderText =
     when (phase) {
       VoicePhase.LISTENING -> "Listening…"
-      VoicePhase.TRANSCRIBING -> "Transcribing…"
+      VoicePhase.TRANSCRIBING ->
+        if (endpointLabel.isNotBlank()) "Transcribing ($endpointLabel)…" else "Transcribing…"
       VoicePhase.OPENING_TARGET -> "Opening $targetLabel…"
       else -> "Search $targetLabel…"
     }

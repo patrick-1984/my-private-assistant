@@ -2,289 +2,11 @@ package com.example.data
 
 import android.content.Context
 import android.content.SharedPreferences
-import java.util.UUID
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
-
-enum class LanguageOption(val code: String?, val label: String) {
-  AUTO(null, "Auto"),
-  POLISH("pl", "Polish"),
-  ENGLISH("en", "English"),
-}
-
-enum class MicSource(val label: String) {
-  AUTO("Auto"),
-  REMOTE_STREAM("Remote stream"),
-  BUILTIN_MIC("Built-in mic"),
-}
-
-enum class ServerFamily(val label: String) {
-  OPENAI_V1("OpenAI-compatible"),
-  OPENAI_NO_V1("OpenAI-compatible"),
-  WHISPER_CPP("whisper.cpp"),
-  WHISPER_ASR("whisper-asr-webservice"),
-}
-
-enum class AppHandoffStatus(val label: String) {
-  UNKNOWN("Unknown"),
-  CONFIRMED("Confirmed"),
-  NOT_WORKING("Not working"),
-}
-
-data class EndpointProfile(
-  val id: String = UUID.randomUUID().toString(),
-  val customName: String = "",
-  val endpointInput: String = "",
-  val useIpOverride: Boolean = false,
-  val overrideIp: String = "",
-  val ignoreSsl: Boolean = false,
-  val apiKey: String = "",
-  val apiKeyNotNeeded: Boolean = false,
-  val useCustomModel: Boolean = false,
-  val modelName: String = AppSettings.DEFAULT_MODEL_NAME,
-  val liveTranscription: Boolean = false,
-  val detectedEndpointUrl: String = "",
-  val detectedFamily: ServerFamily? = null,
-  val detectedForInput: String = "",
-  val targetPackage: String = AppSettings.DEFAULT_TARGET_PACKAGE,
-  val targetLabel: String = AppSettings.DEFAULT_TARGET_LABEL,
-  val searchInCurrentApp: Boolean = true,
-  val language: LanguageOption = LanguageOption.AUTO,
-  val micSource: MicSource = MicSource.AUTO,
-) {
-  val displayName: String
-    get() = deriveDisplayName(customName, endpointInput, useIpOverride, overrideIp)
-
-  val cacheKey: String
-    get() = "${endpointInput.trim()}|$useIpOverride|${overrideIp.trim()}|$ignoreSsl"
-
-  val effectiveApiKey: String
-    get() = if (apiKeyNotNeeded) "" else apiKey.trim()
-
-  val effectiveModelName: String
-    get() = if (useCustomModel && modelName.isNotBlank()) modelName.trim() else AppSettings.DEFAULT_MODEL_NAME
-
-  val isMissingRequiredApiKey: Boolean
-    get() = !apiKeyNotNeeded && apiKey.isBlank()
-
-  val hasValidCachedEndpoint: Boolean
-    get() =
-      detectedEndpointUrl.isNotBlank() &&
-        detectedFamily != null &&
-        detectedForInput == cacheKey
-
-  fun toProbeSettings(): AppSettings {
-    return AppSettings(
-      endpointInput = endpointInput,
-      useIpOverride = useIpOverride,
-      overrideIp = overrideIp,
-      ignoreSsl = ignoreSsl,
-      useApiKey = !apiKeyNotNeeded,
-      apiKey = apiKey,
-      useCustomModel = useCustomModel,
-      modelName = modelName,
-      liveTranscription = liveTranscription,
-      detectedEndpointUrl = detectedEndpointUrl,
-      detectedFamily = detectedFamily,
-      detectedForInput = detectedForInput,
-      targetPackage = targetPackage,
-      targetLabel = targetLabel,
-      searchInCurrentApp = searchInCurrentApp,
-      language = language,
-      micSource = micSource,
-    )
-  }
-
-  fun toJson(): JSONObject {
-    return JSONObject().apply {
-      put("id", id)
-      put("customName", customName)
-      put("endpointInput", endpointInput)
-      put("useIpOverride", useIpOverride)
-      put("overrideIp", overrideIp)
-      put("ignoreSsl", ignoreSsl)
-      put("apiKey", apiKey)
-      put("apiKeyNotNeeded", apiKeyNotNeeded)
-      put("useCustomModel", useCustomModel)
-      put("modelName", modelName)
-      put("liveTranscription", liveTranscription)
-      put("detectedEndpointUrl", detectedEndpointUrl)
-      put("detectedFamily", detectedFamily?.name ?: "")
-      put("detectedForInput", detectedForInput)
-      put("targetPackage", targetPackage)
-      put("targetLabel", targetLabel)
-      put("searchInCurrentApp", searchInCurrentApp)
-      put("language", language.name)
-      put("micSource", micSource.name)
-    }
-  }
-
-  companion object {
-    const val NVIDIA_PRESET_ID = "preset_nvidia_asr"
-    const val NVIDIA_ENDPOINT_URL = "https://integrate.api.nvidia.com/v1"
-    const val NVIDIA_DETECTED_URL = "https://integrate.api.nvidia.com/v1/audio/transcriptions"
-    const val NVIDIA_OLD_NVCF_URL =
-      "https://2b940e91-a70e-4483-a958-d50408b96589.invocation.api.nvcf.nvidia.com/v1/audio/transcriptions"
-    const val NVIDIA_DEFAULT_MODEL = "nvidia/parakeet-tdt-0.6b"
-
-    fun deriveDisplayName(
-      customName: String,
-      endpointInput: String,
-      useIpOverride: Boolean,
-      overrideIp: String,
-    ): String {
-      val explicit = customName.trim()
-      if (explicit.isNotEmpty()) return explicit
-
-      val strippedEndpoint =
-        endpointInput
-          .trim()
-          .replace(Regex("^https?://", RegexOption.IGNORE_CASE), "")
-          .trimEnd('/')
-      val cleanIp = overrideIp.trim()
-
-      val raw =
-        when {
-          strippedEndpoint.isNotEmpty() && useIpOverride && cleanIp.isNotEmpty() ->
-            "$strippedEndpoint ($cleanIp)"
-          strippedEndpoint.isNotEmpty() -> strippedEndpoint
-          cleanIp.isNotEmpty() -> cleanIp
-          else -> "New configuration"
-        }
-
-      return if (raw.length <= 36) raw else raw.take(35) + "…"
-    }
-
-    fun defaultNvidiaProfile(): EndpointProfile {
-      return EndpointProfile(
-        id = NVIDIA_PRESET_ID,
-        customName = "NVIDIA",
-        endpointInput = NVIDIA_ENDPOINT_URL,
-        useIpOverride = false,
-        overrideIp = "",
-        ignoreSsl = false,
-        apiKey = "",
-        apiKeyNotNeeded = false,
-        useCustomModel = true,
-        modelName = NVIDIA_DEFAULT_MODEL,
-        liveTranscription = true,
-        detectedEndpointUrl = NVIDIA_DETECTED_URL,
-        detectedFamily = ServerFamily.OPENAI_V1,
-        detectedForInput = "$NVIDIA_ENDPOINT_URL|false||false",
-        targetPackage = AppSettings.DEFAULT_TARGET_PACKAGE,
-        targetLabel = AppSettings.DEFAULT_TARGET_LABEL,
-        searchInCurrentApp = true,
-        language = LanguageOption.AUTO,
-        micSource = MicSource.AUTO,
-      )
-    }
-
-    fun fromJson(json: JSONObject): EndpointProfile {
-      val familyName = json.optString("detectedFamily", "")
-      val family = ServerFamily.entries.firstOrNull { it.name == familyName }
-      val langName = json.optString("language", LanguageOption.AUTO.name)
-      val language =
-        LanguageOption.entries.firstOrNull { it.name == langName } ?: LanguageOption.AUTO
-      val micName = json.optString("micSource", MicSource.AUTO.name)
-      val micSource = MicSource.entries.firstOrNull { it.name == micName } ?: MicSource.AUTO
-
-      return EndpointProfile(
-        id = json.optString("id", "").ifBlank { UUID.randomUUID().toString() },
-        customName = json.optString("customName", ""),
-        endpointInput = json.optString("endpointInput", ""),
-        useIpOverride = json.optBoolean("useIpOverride", false),
-        overrideIp = json.optString("overrideIp", ""),
-        ignoreSsl = json.optBoolean("ignoreSsl", false),
-        apiKey = json.optString("apiKey", ""),
-        apiKeyNotNeeded = json.optBoolean("apiKeyNotNeeded", false),
-        useCustomModel = json.optBoolean("useCustomModel", false),
-        modelName =
-          json.optString("modelName", AppSettings.DEFAULT_MODEL_NAME).ifBlank {
-            AppSettings.DEFAULT_MODEL_NAME
-          },
-        liveTranscription = json.optBoolean("liveTranscription", false),
-        detectedEndpointUrl = json.optString("detectedEndpointUrl", ""),
-        detectedFamily = family,
-        detectedForInput = json.optString("detectedForInput", ""),
-        targetPackage =
-          json.optString("targetPackage", AppSettings.DEFAULT_TARGET_PACKAGE).ifBlank {
-            AppSettings.DEFAULT_TARGET_PACKAGE
-          },
-        targetLabel =
-          json.optString("targetLabel", AppSettings.DEFAULT_TARGET_LABEL).ifBlank {
-            AppSettings.DEFAULT_TARGET_LABEL
-          },
-        searchInCurrentApp = json.optBoolean("searchInCurrentApp", true),
-        language = language,
-        micSource = micSource,
-      )
-    }
-  }
-}
-
-sealed class ActivateProfileResult {
-  data class Activated(val profile: EndpointProfile) : ActivateProfileResult()
-
-  data class MissingApiKey(val profile: EndpointProfile) : ActivateProfileResult()
-
-  data class InvalidEndpoint(val profile: EndpointProfile) : ActivateProfileResult()
-}
-
-data class AppSettings(
-  val endpointInput: String = "",
-  val useIpOverride: Boolean = false,
-  val overrideIp: String = "",
-  val ignoreSsl: Boolean = false,
-  val useApiKey: Boolean = false,
-  val useCustomModel: Boolean = false,
-  val liveTranscription: Boolean = false,
-  val micButtonCapture: Boolean = true,
-  val searchInCurrentApp: Boolean = true,
-  val detectedEndpointUrl: String = "",
-  val detectedFamily: ServerFamily? = null,
-  val detectedForInput: String = "",
-  val targetPackage: String = DEFAULT_TARGET_PACKAGE,
-  val targetLabel: String = DEFAULT_TARGET_LABEL,
-  val language: LanguageOption = LanguageOption.AUTO,
-  val apiKey: String = "",
-  val modelName: String = DEFAULT_MODEL_NAME,
-  val micSource: MicSource = MicSource.AUTO,
-  val lastAssistArgsLog: String = "",
-  val appHandoffStatuses: Map<String, AppHandoffStatus> = emptyMap(),
-  val profiles: List<EndpointProfile> = emptyList(),
-  val activeProfileId: String? = null,
-) {
-  val activeProfile: EndpointProfile?
-    get() = activeProfileId?.let { id -> profiles.firstOrNull { it.id == id } }
-
-  fun handoffStatusFor(packageName: String): AppHandoffStatus {
-    return appHandoffStatuses[packageName] ?: AppHandoffStatus.UNKNOWN
-  }
-
-  val cacheKey: String
-    get() = "${endpointInput.trim()}|$useIpOverride|${overrideIp.trim()}|$ignoreSsl"
-
-  val effectiveApiKey: String
-    get() = if (useApiKey) apiKey.trim() else ""
-
-  val effectiveModelName: String
-    get() = if (useCustomModel && modelName.isNotBlank()) modelName.trim() else DEFAULT_MODEL_NAME
-
-  val hasValidCachedEndpoint: Boolean
-    get() =
-      detectedEndpointUrl.isNotBlank() &&
-        detectedFamily != null &&
-        detectedForInput == cacheKey
-
-  companion object {
-    const val DEFAULT_TARGET_PACKAGE = "org.smarttube.stable"
-    const val DEFAULT_TARGET_LABEL = "SmartTube"
-    const val DEFAULT_MODEL_NAME = "whisper-1"
-  }
-}
 
 class SettingsRepository private constructor(context: Context) {
 
@@ -292,7 +14,7 @@ class SettingsRepository private constructor(context: Context) {
     context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
   init {
-    ensureInitializedProfiles()
+    ensureInitializedHierarchy()
   }
 
   private val _settings = MutableStateFlow(readFromPrefs())
@@ -305,160 +27,295 @@ class SettingsRepository private constructor(context: Context) {
     prefs.registerOnSharedPreferenceChangeListener(listener)
   }
 
-  private fun ensureInitializedProfiles() {
-    if (prefs.contains(KEY_PROFILES_JSON)) return
-
-    val legacyEndpoint = prefs.getString(KEY_ENDPOINT_INPUT, "")?.trim().orEmpty()
-    val nvidia = EndpointProfile.defaultNvidiaProfile()
-
-    if (legacyEndpoint.isBlank()) {
-      val arr = JSONArray().apply { put(nvidia.toJson()) }
-      prefs.edit().apply {
-        putString(KEY_PROFILES_JSON, arr.toString())
-        remove(KEY_ACTIVE_PROFILE_ID)
-        commit()
-      }
+  private fun ensureInitializedHierarchy() {
+    if (
+      prefs.contains(KEY_ENDPOINTS_JSON) &&
+        prefs.contains(KEY_APP_PRESETS_JSON) &&
+        prefs.contains(KEY_CONFIGS_JSON)
+    ) {
       return
     }
 
-    val langName = prefs.getString(KEY_LANGUAGE, LanguageOption.AUTO.name)
-    val language =
-      LanguageOption.entries.firstOrNull { it.name == langName } ?: LanguageOption.AUTO
-    val micName = prefs.getString(KEY_MIC_SOURCE, MicSource.AUTO.name)
-    val micSource = MicSource.entries.firstOrNull { it.name == micName } ?: MicSource.AUTO
-    val familyName = prefs.getString(KEY_DETECTED_FAMILY, null)
-    val family = ServerFamily.entries.firstOrNull { it.name == familyName }
-    val savedApiKey = prefs.getString(KEY_API_KEY, "") ?: ""
-    val useApiKey =
-      if (prefs.contains(KEY_USE_API_KEY)) prefs.getBoolean(KEY_USE_API_KEY, false)
-      else savedApiKey.isNotBlank()
-    val savedModel =
-      prefs.getString(KEY_MODEL_NAME, AppSettings.DEFAULT_MODEL_NAME)?.ifBlank {
-        AppSettings.DEFAULT_MODEL_NAME
-      } ?: AppSettings.DEFAULT_MODEL_NAME
-    val useCustomModel =
-      if (prefs.contains(KEY_USE_CUSTOM_MODEL)) prefs.getBoolean(KEY_USE_CUSTOM_MODEL, false)
-      else savedModel != AppSettings.DEFAULT_MODEL_NAME
+    val nvidia = EndpointPreset.defaultNvidiaPreset()
+    val defaultAppPreset = AppSettingsPreset.defaultPreset()
 
-    val migrated =
-      EndpointProfile(
-        id = "migrated_default",
-        customName = "",
-        endpointInput = legacyEndpoint,
-        useIpOverride = prefs.getBoolean(KEY_USE_IP_OVERRIDE, false),
-        overrideIp = prefs.getString(KEY_OVERRIDE_IP, "") ?: "",
-        ignoreSsl = prefs.getBoolean(KEY_IGNORE_SSL, false),
-        apiKey = savedApiKey,
-        apiKeyNotNeeded = !useApiKey,
-        useCustomModel = useCustomModel,
-        modelName = savedModel,
-        liveTranscription = prefs.getBoolean(KEY_LIVE_TRANSCRIPTION, false),
-        detectedEndpointUrl = prefs.getString(KEY_DETECTED_URL, "") ?: "",
-        detectedFamily = family,
-        detectedForInput = prefs.getString(KEY_DETECTED_FOR_INPUT, "") ?: "",
-        targetPackage =
-          prefs.getString(KEY_TARGET_PACKAGE, AppSettings.DEFAULT_TARGET_PACKAGE)
-            ?: AppSettings.DEFAULT_TARGET_PACKAGE,
-        targetLabel =
-          prefs.getString(KEY_TARGET_LABEL, AppSettings.DEFAULT_TARGET_LABEL)
-            ?: AppSettings.DEFAULT_TARGET_LABEL,
-        searchInCurrentApp = prefs.getBoolean(KEY_SEARCH_IN_CURRENT_APP, true),
-        language = language,
-        micSource = micSource,
-      )
+    // 1. Migrate from v2 EndpointProfile list if present
+    val legacyProfilesJson = prefs.getString(KEY_PROFILES_JSON, null)
+    if (!legacyProfilesJson.isNullOrBlank()) {
+      val migratedEndpoints = mutableListOf<EndpointPreset>()
+      val migratedApps = mutableListOf<AppSettingsPreset>(defaultAppPreset)
+      val migratedConfigs = mutableListOf<ConfigurationPreset>()
+      val oldActiveId = prefs.getString(KEY_ACTIVE_PROFILE_ID, null)?.takeIf { it.isNotBlank() }
+      var nextActiveConfigId: String? = null
 
-    val arr = JSONArray().apply {
-      put(nvidia.toJson())
-      put(migrated.toJson())
+      try {
+        val arr = JSONArray(legacyProfilesJson)
+        for (i in 0 until arr.length()) {
+          val obj = arr.optJSONObject(i) ?: continue
+          val parsedEp = EndpointPreset.fromJson(obj)
+          val ep = normalizeNvidiaIfUntouched(parsedEp)
+          migratedEndpoints.add(ep)
+
+          val targetPkg =
+            obj.optString("targetPackage", AppSettings.DEFAULT_TARGET_PACKAGE).ifBlank {
+              AppSettings.DEFAULT_TARGET_PACKAGE
+            }
+          val targetLbl =
+            obj.optString("targetLabel", AppSettings.DEFAULT_TARGET_LABEL).ifBlank {
+              AppSettings.DEFAULT_TARGET_LABEL
+            }
+          val searchCurrent = obj.optBoolean("searchInCurrentApp", true)
+          val lang =
+            LanguageOption.entries.firstOrNull {
+              it.name == obj.optString("language", LanguageOption.AUTO.name)
+            } ?: LanguageOption.AUTO
+          val mic =
+            MicSource.entries.firstOrNull {
+              it.name == obj.optString("micSource", MicSource.AUTO.name)
+            } ?: MicSource.AUTO
+
+          val matchingApp =
+            migratedApps.firstOrNull {
+              it.targetPackage == targetPkg &&
+                it.searchInCurrentApp == searchCurrent &&
+                it.language == lang &&
+                it.micSource == mic
+            }
+              ?: AppSettingsPreset(
+                  id = "app_${ep.id}",
+                  customName = "",
+                  targetPackage = targetPkg,
+                  targetLabel = targetLbl,
+                  searchInCurrentApp = searchCurrent,
+                  language = lang,
+                  micSource = mic,
+                )
+                .also { migratedApps.add(it) }
+
+          val cfgId =
+            if (ep.id == EndpointPreset.NVIDIA_PRESET_ID && arr.length() == 1) {
+              ConfigurationPreset.DEFAULT_CONFIG_ID
+            } else {
+              "cfg_${ep.id}"
+            }
+          val cfg =
+            ConfigurationPreset(
+              id = cfgId,
+              customName = ep.customName,
+              primaryEndpointId = ep.id,
+              appSettingsPresetId = matchingApp.id,
+              allowEndpointFailover = true,
+            )
+          migratedConfigs.add(cfg)
+          if (oldActiveId == ep.id && ep.isUsable) {
+            nextActiveConfigId = cfg.id
+          }
+        }
+      } catch (_: Exception) {
+        // Fallback below if malformed
+      }
+
+      if (migratedEndpoints.isNotEmpty()) {
+        persistHierarchySync(migratedEndpoints, migratedApps, migratedConfigs, nextActiveConfigId)
+        return
+      }
     }
-    val initialActiveId = if (migrated.isMissingRequiredApiKey) null else migrated.id
-    prefs.edit().apply {
-      putString(KEY_PROFILES_JSON, arr.toString())
-      if (initialActiveId != null) putString(KEY_ACTIVE_PROFILE_ID, initialActiveId)
-      else remove(KEY_ACTIVE_PROFILE_ID)
-      commit()
+
+    // 2. Migrate from v1 flat preferences if present
+    val legacyEndpoint = prefs.getString(KEY_ENDPOINT_INPUT, "")?.trim().orEmpty()
+    if (legacyEndpoint.isNotBlank()) {
+      val lang =
+        LanguageOption.entries.firstOrNull {
+          it.name == prefs.getString(KEY_LANGUAGE, LanguageOption.AUTO.name)
+        } ?: LanguageOption.AUTO
+      val mic =
+        MicSource.entries.firstOrNull {
+          it.name == prefs.getString(KEY_MIC_SOURCE, MicSource.AUTO.name)
+        } ?: MicSource.AUTO
+      val family =
+        ServerFamily.entries.firstOrNull {
+          it.name == prefs.getString(KEY_DETECTED_FAMILY, null)
+        }
+      val savedApiKey = prefs.getString(KEY_API_KEY, "") ?: ""
+      val useApiKey =
+        if (prefs.contains(KEY_USE_API_KEY)) prefs.getBoolean(KEY_USE_API_KEY, false)
+        else savedApiKey.isNotBlank()
+      val savedModel =
+        prefs.getString(KEY_MODEL_NAME, AppSettings.DEFAULT_MODEL_NAME)?.ifBlank {
+          AppSettings.DEFAULT_MODEL_NAME
+        } ?: AppSettings.DEFAULT_MODEL_NAME
+      val useCustomModel =
+        if (prefs.contains(KEY_USE_CUSTOM_MODEL)) prefs.getBoolean(KEY_USE_CUSTOM_MODEL, false)
+        else savedModel != AppSettings.DEFAULT_MODEL_NAME
+
+      val migratedEp =
+        EndpointPreset(
+          id = "migrated_default",
+          endpointInput = legacyEndpoint,
+          useIpOverride = prefs.getBoolean(KEY_USE_IP_OVERRIDE, false),
+          overrideIp = prefs.getString(KEY_OVERRIDE_IP, "") ?: "",
+          ignoreSsl = prefs.getBoolean(KEY_IGNORE_SSL, false),
+          apiKey = savedApiKey,
+          apiKeyNotNeeded = !useApiKey,
+          useCustomModel = useCustomModel,
+          modelName = savedModel,
+          liveTranscription = prefs.getBoolean(KEY_LIVE_TRANSCRIPTION, false),
+          detectedEndpointUrl = prefs.getString(KEY_DETECTED_URL, "") ?: "",
+          detectedFamily = family,
+          detectedForInput = prefs.getString(KEY_DETECTED_FOR_INPUT, "") ?: "",
+        )
+      val migratedApp =
+        AppSettingsPreset(
+          id = AppSettingsPreset.DEFAULT_APP_PRESET_ID,
+          customName = "Default TV",
+          targetPackage =
+            prefs.getString(KEY_TARGET_PACKAGE, AppSettings.DEFAULT_TARGET_PACKAGE)
+              ?: AppSettings.DEFAULT_TARGET_PACKAGE,
+          targetLabel =
+            prefs.getString(KEY_TARGET_LABEL, AppSettings.DEFAULT_TARGET_LABEL)
+              ?: AppSettings.DEFAULT_TARGET_LABEL,
+          searchInCurrentApp = prefs.getBoolean(KEY_SEARCH_IN_CURRENT_APP, true),
+          language = lang,
+          micSource = mic,
+        )
+      val migratedConfig =
+        ConfigurationPreset(
+          id = "cfg_migrated_default",
+          customName = "",
+          primaryEndpointId = migratedEp.id,
+          appSettingsPresetId = migratedApp.id,
+          allowEndpointFailover = true,
+        )
+      val activeId = if (migratedEp.isUsable) migratedConfig.id else null
+      persistHierarchySync(
+        endpoints = listOf(nvidia, migratedEp),
+        appPresets = listOf(defaultAppPreset.takeIf { it.id != migratedApp.id } ?: migratedApp)
+          .distinctBy { it.id },
+        configs = listOf(migratedConfig),
+        activeConfigId = activeId,
+      )
+      return
+    }
+
+    // 3. Fresh install defaults: inactive NVIDIA preset + Default TV app preset + Default config
+    val defaultConfig =
+      ConfigurationPreset(
+        id = ConfigurationPreset.DEFAULT_CONFIG_ID,
+        customName = "Default",
+        primaryEndpointId = nvidia.id,
+        appSettingsPresetId = defaultAppPreset.id,
+        allowEndpointFailover = true,
+      )
+    persistHierarchySync(
+      endpoints = listOf(nvidia),
+      appPresets = listOf(defaultAppPreset),
+      configs = listOf(defaultConfig),
+      activeConfigId = null,
+    )
+  }
+
+  private fun normalizeNvidiaIfUntouched(ep: EndpointPreset): EndpointPreset {
+    return if (
+      ep.id == EndpointPreset.NVIDIA_PRESET_ID &&
+        ep.apiKey.isBlank() &&
+        (ep.endpointInput == EndpointPreset.NVIDIA_OLD_NVCF_URL ||
+          ep.endpointInput == EndpointPreset.NVIDIA_DETECTED_URL ||
+          (ep.endpointInput == EndpointPreset.NVIDIA_ENDPOINT_URL &&
+            ep.modelName.startsWith("nvidia/parakeet-tdt-0.6b")))
+    ) {
+      EndpointPreset.defaultNvidiaPreset()
+    } else {
+      ep
     }
   }
 
   private fun readFromPrefs(): AppSettings {
-    val profiles = decodeProfiles(prefs.getString(KEY_PROFILES_JSON, null))
-    val storedActiveId = prefs.getString(KEY_ACTIVE_PROFILE_ID, null)?.takeIf { it.isNotBlank() }
-    val active = storedActiveId?.let { id -> profiles.firstOrNull { it.id == id } }
+    val endpoints = decodeEndpoints(prefs.getString(KEY_ENDPOINTS_JSON, null))
+    val appPresets =
+      decodeAppPresets(prefs.getString(KEY_APP_PRESETS_JSON, null)).ifEmpty {
+        listOf(AppSettingsPreset.defaultPreset())
+      }
+    val configs = decodeConfigs(prefs.getString(KEY_CONFIGS_JSON, null))
+    val storedActiveId = prefs.getString(KEY_ACTIVE_CONFIG_ID, null)?.takeIf { it.isNotBlank() }
+    val activeConfig = storedActiveId?.let { id -> configs.firstOrNull { it.id == id } }
+    val primaryEp =
+      activeConfig?.primaryEndpointId?.let { id -> endpoints.firstOrNull { it.id == id } }
+    val activeApp =
+      activeConfig?.appSettingsPresetId?.let { id -> appPresets.firstOrNull { it.id == id } }
+        ?: appPresets.firstOrNull()
 
     val micButtonCapture = prefs.getBoolean(KEY_MIC_BUTTON_CAPTURE, true)
     val lastAssistArgsLog = prefs.getString(KEY_LAST_ASSIST_ARGS, "") ?: ""
     val statuses = decodeStatuses(prefs.getString(KEY_APP_HANDOFF_STATUSES, null))
 
-    if (active != null) {
-      return AppSettings(
-        endpointInput = active.endpointInput,
-        useIpOverride = active.useIpOverride,
-        overrideIp = active.overrideIp,
-        ignoreSsl = active.ignoreSsl,
-        useApiKey = !active.apiKeyNotNeeded,
-        useCustomModel = active.useCustomModel,
-        liveTranscription = active.liveTranscription,
-        micButtonCapture = micButtonCapture,
-        searchInCurrentApp = active.searchInCurrentApp,
-        detectedEndpointUrl = active.detectedEndpointUrl,
-        detectedFamily = active.detectedFamily,
-        detectedForInput = active.detectedForInput,
-        targetPackage = active.targetPackage,
-        targetLabel = active.targetLabel,
-        language = active.language,
-        apiKey = active.apiKey,
-        modelName = active.modelName,
-        micSource = active.micSource,
-        lastAssistArgsLog = lastAssistArgsLog,
-        appHandoffStatuses = statuses,
-        profiles = profiles,
-        activeProfileId = active.id,
-      )
-    }
-
-    val langName = prefs.getString(KEY_LANGUAGE, LanguageOption.AUTO.name)
-    val language =
-      LanguageOption.entries.firstOrNull { it.name == langName } ?: LanguageOption.AUTO
-    val micName = prefs.getString(KEY_MIC_SOURCE, MicSource.AUTO.name)
-    val micSource = MicSource.entries.firstOrNull { it.name == micName } ?: MicSource.AUTO
+    val resolvedApp = activeApp ?: AppSettingsPreset.defaultPreset()
 
     return AppSettings(
-      endpointInput = "",
+      endpointInput = primaryEp?.endpointInput.orEmpty(),
+      useIpOverride = primaryEp?.useIpOverride ?: false,
+      overrideIp = primaryEp?.overrideIp.orEmpty(),
+      ignoreSsl = primaryEp?.ignoreSsl ?: false,
+      useApiKey = primaryEp?.let { !it.apiKeyNotNeeded } ?: false,
+      useCustomModel = primaryEp?.useCustomModel ?: false,
+      liveTranscription = primaryEp?.liveTranscription ?: false,
       micButtonCapture = micButtonCapture,
-      searchInCurrentApp = prefs.getBoolean(KEY_SEARCH_IN_CURRENT_APP, true),
-      targetPackage =
-        prefs.getString(KEY_TARGET_PACKAGE, AppSettings.DEFAULT_TARGET_PACKAGE)
-          ?: AppSettings.DEFAULT_TARGET_PACKAGE,
-      targetLabel =
-        prefs.getString(KEY_TARGET_LABEL, AppSettings.DEFAULT_TARGET_LABEL)
-          ?: AppSettings.DEFAULT_TARGET_LABEL,
-      language = language,
-      micSource = micSource,
+      searchInCurrentApp = resolvedApp.searchInCurrentApp,
+      detectedEndpointUrl = primaryEp?.detectedEndpointUrl.orEmpty(),
+      detectedFamily = primaryEp?.detectedFamily,
+      detectedForInput = primaryEp?.detectedForInput.orEmpty(),
+      targetPackage = resolvedApp.targetPackage,
+      targetLabel = resolvedApp.targetLabel,
+      language = resolvedApp.language,
+      apiKey = primaryEp?.apiKey.orEmpty(),
+      modelName = primaryEp?.modelName ?: AppSettings.DEFAULT_MODEL_NAME,
+      micSource = resolvedApp.micSource,
       lastAssistArgsLog = lastAssistArgsLog,
       appHandoffStatuses = statuses,
-      profiles = profiles,
-      activeProfileId = null,
+      endpointPresets = endpoints,
+      appSettingsPresets = appPresets,
+      configurationPresets = configs,
+      activeConfigurationId = activeConfig?.id,
     )
   }
 
-  private fun decodeProfiles(rawJson: String?): List<EndpointProfile> {
+  private fun decodeEndpoints(rawJson: String?): List<EndpointPreset> {
     if (rawJson.isNullOrBlank()) return emptyList()
     return try {
       val arr = JSONArray(rawJson)
       buildList {
         for (i in 0 until arr.length()) {
           val obj = arr.optJSONObject(i) ?: continue
-          val parsed = EndpointProfile.fromJson(obj)
-          if (
-            parsed.id == EndpointProfile.NVIDIA_PRESET_ID &&
-              (parsed.endpointInput == EndpointProfile.NVIDIA_OLD_NVCF_URL ||
-                parsed.endpointInput == EndpointProfile.NVIDIA_DETECTED_URL) &&
-              parsed.apiKey.isBlank()
-          ) {
-            add(EndpointProfile.defaultNvidiaProfile())
-          } else {
-            add(parsed)
-          }
+          add(normalizeNvidiaIfUntouched(EndpointPreset.fromJson(obj)))
+        }
+      }
+    } catch (_: Exception) {
+      emptyList()
+    }
+  }
+
+  private fun decodeAppPresets(rawJson: String?): List<AppSettingsPreset> {
+    if (rawJson.isNullOrBlank()) return emptyList()
+    return try {
+      val arr = JSONArray(rawJson)
+      buildList {
+        for (i in 0 until arr.length()) {
+          val obj = arr.optJSONObject(i) ?: continue
+          add(AppSettingsPreset.fromJson(obj))
+        }
+      }
+    } catch (_: Exception) {
+      emptyList()
+    }
+  }
+
+  private fun decodeConfigs(rawJson: String?): List<ConfigurationPreset> {
+    if (rawJson.isNullOrBlank()) return emptyList()
+    return try {
+      val arr = JSONArray(rawJson)
+      buildList {
+        for (i in 0 until arr.length()) {
+          val obj = arr.optJSONObject(i) ?: continue
+          add(ConfigurationPreset.fromJson(obj))
         }
       }
     } catch (_: Exception) {
@@ -486,192 +343,313 @@ class SettingsRepository private constructor(context: Context) {
     }
   }
 
-  private fun persistProfiles(profiles: List<EndpointProfile>, activeProfileId: String?) {
-    val arr = JSONArray()
-    profiles.forEach { arr.put(it.toJson()) }
+  private fun persistHierarchySync(
+    endpoints: List<EndpointPreset>,
+    appPresets: List<AppSettingsPreset>,
+    configs: List<ConfigurationPreset>,
+    activeConfigId: String?,
+  ) {
+    val epArr = JSONArray().apply { endpoints.forEach { put(it.toJson()) } }
+    val appArr = JSONArray().apply { appPresets.forEach { put(it.toJson()) } }
+    val cfgArr = JSONArray().apply { configs.forEach { put(it.toJson()) } }
+    val validActive = activeConfigId?.takeIf { id -> configs.any { it.id == id } }
     prefs.edit().apply {
-      putString(KEY_PROFILES_JSON, arr.toString())
-      if (activeProfileId != null && profiles.any { it.id == activeProfileId }) {
-        putString(KEY_ACTIVE_PROFILE_ID, activeProfileId)
-      } else {
-        remove(KEY_ACTIVE_PROFILE_ID)
-      }
+      putString(KEY_ENDPOINTS_JSON, epArr.toString())
+      putString(KEY_APP_PRESETS_JSON, appArr.toString())
+      putString(KEY_CONFIGS_JSON, cfgArr.toString())
+      if (validActive != null) putString(KEY_ACTIVE_CONFIG_ID, validActive)
+      else remove(KEY_ACTIVE_CONFIG_ID)
+      commit()
+    }
+  }
+
+  private fun persistHierarchy(
+    endpoints: List<EndpointPreset> = _settings.value.endpointPresets,
+    appPresets: List<AppSettingsPreset> = _settings.value.appSettingsPresets,
+    configs: List<ConfigurationPreset> = _settings.value.configurationPresets,
+    activeConfigId: String? = _settings.value.activeConfigurationId,
+  ) {
+    val epArr = JSONArray().apply { endpoints.forEach { put(it.toJson()) } }
+    val appArr = JSONArray().apply { appPresets.forEach { put(it.toJson()) } }
+    val cfgArr = JSONArray().apply { configs.forEach { put(it.toJson()) } }
+    val validActive = activeConfigId?.takeIf { id -> configs.any { it.id == id } }
+    prefs.edit().apply {
+      putString(KEY_ENDPOINTS_JSON, epArr.toString())
+      putString(KEY_APP_PRESETS_JSON, appArr.toString())
+      putString(KEY_CONFIGS_JSON, cfgArr.toString())
+      if (validActive != null) putString(KEY_ACTIVE_CONFIG_ID, validActive)
+      else remove(KEY_ACTIVE_CONFIG_ID)
       apply()
     }
     _settings.value = readFromPrefs()
   }
 
-  fun saveProfile(profile: EndpointProfile, activateIfEligible: Boolean = true): ActivateProfileResult? {
+  fun saveEndpointPreset(
+    preset: EndpointPreset,
+    autoActivateIfNoActiveConfig: Boolean = false,
+  ): ActivateConfigResult? {
     val sanitized =
-      profile.copy(
-        customName = profile.customName.trim(),
-        endpointInput = profile.endpointInput.trim(),
-        overrideIp = profile.overrideIp.trim(),
-        apiKey = profile.apiKey.trim(),
-        modelName = profile.modelName.trim().ifBlank { AppSettings.DEFAULT_MODEL_NAME },
+      preset.copy(
+        customName = preset.customName.trim(),
+        endpointInput = preset.endpointInput.trim(),
+        overrideIp = preset.overrideIp.trim(),
+        apiKey = preset.apiKey.trim(),
+        modelName = preset.modelName.trim().ifBlank { AppSettings.DEFAULT_MODEL_NAME },
       )
 
     val current = _settings.value
-    val existingIdx = current.profiles.indexOfFirst { it.id == sanitized.id }
-    val updatedProfiles =
+    val existingIdx = current.endpointPresets.indexOfFirst { it.id == sanitized.id }
+    val updatedEndpoints =
       if (existingIdx >= 0) {
-        current.profiles.toMutableList().apply { set(existingIdx, sanitized) }
+        current.endpointPresets.toMutableList().apply { set(existingIdx, sanitized) }
       } else {
-        current.profiles + sanitized
+        current.endpointPresets + sanitized
       }
 
-    val wasActive = current.activeProfileId == sanitized.id
-    val nextActiveId: String? =
-      when {
-        sanitized.isMissingRequiredApiKey || sanitized.endpointInput.isBlank() -> {
-          if (wasActive) null else current.activeProfileId
+    var updatedConfigs = current.configurationPresets
+    var nextActiveConfigId = current.activeConfigurationId
+    var activationOutcome: ActivateConfigResult? = null
+
+    val activeCfg = current.activeConfiguration
+    if (activeCfg != null && activeCfg.primaryEndpointId == sanitized.id && !sanitized.isUsable) {
+      nextActiveConfigId = null
+      activationOutcome =
+        if (sanitized.isMissingRequiredApiKey) {
+          ActivateConfigResult.MissingApiKey(activeCfg, sanitized)
+        } else {
+          ActivateConfigResult.InvalidEndpoint(activeCfg)
         }
-        activateIfEligible || wasActive -> sanitized.id
-        else -> current.activeProfileId
+    } else if (autoActivateIfNoActiveConfig && sanitized.isUsable) {
+      // Find existing config whose primary is this endpoint, or create one if none active
+      val matchingCfg =
+        updatedConfigs.firstOrNull { it.primaryEndpointId == sanitized.id }
+          ?: if (current.activeConfigurationId == null) {
+            val defaultAppId =
+              current.appSettingsPresets.firstOrNull()?.id ?: AppSettingsPreset.DEFAULT_APP_PRESET_ID
+            ConfigurationPreset(
+              customName = "",
+              primaryEndpointId = sanitized.id,
+              appSettingsPresetId = defaultAppId,
+              allowEndpointFailover = true,
+            ).also { updatedConfigs = updatedConfigs + it }
+          } else {
+            null
+          }
+      if (matchingCfg != null && current.activeConfigurationId == null) {
+        nextActiveConfigId = matchingCfg.id
+        activationOutcome =
+          ActivateConfigResult.Activated(
+            matchingCfg,
+            matchingCfg.resolveDisplayName(updatedEndpoints, current.appSettingsPresets),
+          )
+      }
+    }
+
+    persistHierarchy(
+      endpoints = updatedEndpoints,
+      configs = updatedConfigs,
+      activeConfigId = nextActiveConfigId,
+    )
+    return activationOutcome
+  }
+
+  fun deleteEndpointPreset(endpointId: String) {
+    val current = _settings.value
+    val updatedEndpoints = current.endpointPresets.filterNot { it.id == endpointId }
+    val updatedConfigs =
+      current.configurationPresets.map { cfg ->
+        var primary = cfg.primaryEndpointId
+        var secondary = cfg.secondaryEndpointId
+        var tertiary = cfg.tertiaryEndpointId
+        if (tertiary == endpointId) tertiary = null
+        if (secondary == endpointId) {
+          secondary = tertiary
+          tertiary = null
+        }
+        if (primary == endpointId) {
+          primary = secondary
+          secondary = tertiary
+          tertiary = null
+        }
+        cfg.copy(
+          primaryEndpointId = primary,
+          secondaryEndpointId = secondary,
+          tertiaryEndpointId = tertiary,
+        )
       }
 
-    persistProfiles(updatedProfiles, nextActiveId)
+    var nextActive = current.activeConfigurationId
+    if (nextActive != null) {
+      val activeAfter = updatedConfigs.firstOrNull { it.id == nextActive }
+      val primaryEp = activeAfter?.primaryEndpointId?.let { id -> updatedEndpoints.firstOrNull { it.id == id } }
+      if (primaryEp == null || !primaryEp.isUsable) {
+        nextActive = null
+      }
+    }
+
+    persistHierarchy(
+      endpoints = updatedEndpoints,
+      configs = updatedConfigs,
+      activeConfigId = nextActive,
+    )
+  }
+
+  fun saveAppPreset(preset: AppSettingsPreset): AppSettingsPreset {
+    val sanitized = preset.copy(customName = preset.customName.trim())
+    val current = _settings.value
+    val idx = current.appSettingsPresets.indexOfFirst { it.id == sanitized.id }
+    val updatedApps =
+      if (idx >= 0) {
+        current.appSettingsPresets.toMutableList().apply { set(idx, sanitized) }
+      } else {
+        current.appSettingsPresets + sanitized
+      }
+    persistHierarchy(appPresets = updatedApps)
+    return sanitized
+  }
+
+  fun deleteAppPreset(appPresetId: String) {
+    val current = _settings.value
+    val remaining = current.appSettingsPresets.filterNot { it.id == appPresetId }
+    val safeApps = remaining.ifEmpty { listOf(AppSettingsPreset.defaultPreset()) }
+    val fallbackAppId = safeApps.first().id
+    val updatedConfigs =
+      current.configurationPresets.map { cfg ->
+        if (cfg.appSettingsPresetId == appPresetId) cfg.copy(appSettingsPresetId = fallbackAppId)
+        else cfg
+      }
+    persistHierarchy(appPresets = safeApps, configs = updatedConfigs)
+  }
+
+  fun saveConfigurationPreset(
+    config: ConfigurationPreset,
+    activateIfEligible: Boolean = true,
+  ): ActivateConfigResult? {
+    val current = _settings.value
+    val resolvedAppId =
+      config.appSettingsPresetId?.takeIf { id -> current.appSettingsPresets.any { it.id == id } }
+        ?: current.appSettingsPresets.firstOrNull()?.id
+
+    // Normalize distinct endpoint slots
+    val pId = config.primaryEndpointId?.takeIf { id -> current.endpointPresets.any { it.id == id } }
+    val sId =
+      config.secondaryEndpointId
+        ?.takeIf { it != pId && current.endpointPresets.any { ep -> ep.id == it } }
+    val tId =
+      config.tertiaryEndpointId
+        ?.takeIf { it != pId && it != sId && current.endpointPresets.any { ep -> ep.id == it } }
+
+    val sanitized =
+      config.copy(
+        customName = config.customName.trim(),
+        primaryEndpointId = pId,
+        secondaryEndpointId = sId,
+        tertiaryEndpointId = tId,
+        appSettingsPresetId = resolvedAppId,
+      )
+
+    val idx = current.configurationPresets.indexOfFirst { it.id == sanitized.id }
+    val updatedConfigs =
+      if (idx >= 0) {
+        current.configurationPresets.toMutableList().apply { set(idx, sanitized) }
+      } else {
+        current.configurationPresets + sanitized
+      }
+
+    val primaryEp = sanitized.primaryEndpointId?.let { current.endpointById(it) }
+    val wasActive = current.activeConfigurationId == sanitized.id
+    val nextActiveId =
+      when {
+        primaryEp == null || !primaryEp.isUsable -> if (wasActive) null else current.activeConfigurationId
+        activateIfEligible || wasActive -> sanitized.id
+        else -> current.activeConfigurationId
+      }
+
+    persistHierarchy(configs = updatedConfigs, activeConfigId = nextActiveId)
 
     return when {
-      sanitized.endpointInput.isBlank() && (activateIfEligible || wasActive) ->
-        ActivateProfileResult.InvalidEndpoint(sanitized)
-      sanitized.isMissingRequiredApiKey && (activateIfEligible || wasActive) ->
-        ActivateProfileResult.MissingApiKey(sanitized)
-      nextActiveId == sanitized.id -> ActivateProfileResult.Activated(sanitized)
+      (primaryEp == null || primaryEp.endpointInput.isBlank()) && (activateIfEligible || wasActive) ->
+        ActivateConfigResult.InvalidEndpoint(sanitized)
+      primaryEp != null && primaryEp.isMissingRequiredApiKey && (activateIfEligible || wasActive) ->
+        ActivateConfigResult.MissingApiKey(sanitized, primaryEp)
+      nextActiveId == sanitized.id ->
+        ActivateConfigResult.Activated(
+          sanitized,
+          sanitized.resolveDisplayName(current.endpointPresets, current.appSettingsPresets),
+        )
       else -> null
     }
   }
 
-  fun activateProfile(profileId: String): ActivateProfileResult {
+  fun activateConfigurationPreset(configId: String): ActivateConfigResult {
     val current = _settings.value
     val target =
-      current.profiles.firstOrNull { it.id == profileId }
-        ?: return ActivateProfileResult.InvalidEndpoint(EndpointProfile(id = profileId))
-
-    if (target.endpointInput.isBlank()) {
-      return ActivateProfileResult.InvalidEndpoint(target)
+      current.configurationPresets.firstOrNull { it.id == configId }
+        ?: return ActivateConfigResult.InvalidEndpoint(ConfigurationPreset(id = configId))
+    val primaryEp = target.primaryEndpointId?.let { current.endpointById(it) }
+    if (primaryEp == null || primaryEp.endpointInput.isBlank()) {
+      return ActivateConfigResult.InvalidEndpoint(target)
     }
-    if (target.isMissingRequiredApiKey) {
-      return ActivateProfileResult.MissingApiKey(target)
+    if (primaryEp.isMissingRequiredApiKey) {
+      return ActivateConfigResult.MissingApiKey(target, primaryEp)
     }
-
-    persistProfiles(current.profiles, target.id)
-    return ActivateProfileResult.Activated(target)
+    persistHierarchy(activeConfigId = target.id)
+    return ActivateConfigResult.Activated(
+      target,
+      target.resolveDisplayName(current.endpointPresets, current.appSettingsPresets),
+    )
   }
 
-  fun deleteProfile(profileId: String) {
+  fun deleteConfigurationPreset(configId: String) {
     val current = _settings.value
-    val updated = current.profiles.filterNot { it.id == profileId }
-    val nextActiveId =
-      if (current.activeProfileId == profileId) null else current.activeProfileId
-    persistProfiles(updated, nextActiveId)
+    val updated = current.configurationPresets.filterNot { it.id == configId }
+    val nextActive = if (current.activeConfigurationId == configId) null else current.activeConfigurationId
+    persistHierarchy(configs = updated, activeConfigId = nextActive)
   }
 
-  private inline fun mutateActiveProfileOrPrefs(
-    legacyWrite: SharedPreferences.Editor.() -> Unit,
-    profileTransform: (EndpointProfile) -> EndpointProfile,
+  fun saveDetectedEndpointForPreset(
+    presetId: String,
+    cacheKey: String,
+    fullUrl: String,
+    family: ServerFamily,
   ) {
     val current = _settings.value
-    val active = current.activeProfile
-    if (active != null) {
-      val next = profileTransform(active)
-      val updated = current.profiles.map { if (it.id == active.id) next else it }
-      val nextActive =
-        if (next.isMissingRequiredApiKey || next.endpointInput.isBlank()) null else active.id
-      persistProfiles(updated, nextActive)
-    } else {
-      prefs.edit().apply(legacyWrite).apply()
-      _settings.value = readFromPrefs()
-    }
+    val updated =
+      current.endpointPresets.map { ep ->
+        if (ep.id == presetId && ep.cacheKey == cacheKey) {
+          ep.copy(
+            detectedEndpointUrl = fullUrl,
+            detectedFamily = family,
+            detectedForInput = cacheKey,
+          )
+        } else {
+          ep
+        }
+      }
+    persistHierarchy(endpoints = updated)
   }
 
-  fun updateEndpointInput(input: String) {
-    val trimmed = input.trim()
-    mutateActiveProfileOrPrefs(
-      legacyWrite = { putString(KEY_ENDPOINT_INPUT, trimmed) },
-    ) { active ->
-      val nextCacheKey =
-        "$trimmed|${active.useIpOverride}|${active.overrideIp.trim()}|${active.ignoreSsl}"
-      val keepDetected = active.detectedForInput == nextCacheKey
-      active.copy(
-        endpointInput = trimmed,
-        detectedEndpointUrl = if (keepDetected) active.detectedEndpointUrl else "",
-        detectedFamily = if (keepDetected) active.detectedFamily else null,
-        detectedForInput = if (keepDetected) active.detectedForInput else "",
-      )
-    }
+  fun clearDetectedEndpointForPreset(presetId: String) {
+    val current = _settings.value
+    val updated =
+      current.endpointPresets.map { ep ->
+        if (ep.id == presetId) {
+          ep.copy(detectedEndpointUrl = "", detectedFamily = null, detectedForInput = "")
+        } else {
+          ep
+        }
+      }
+    persistHierarchy(endpoints = updated)
   }
 
-  fun setUseIpOverride(enabled: Boolean) {
-    mutateActiveProfileOrPrefs(legacyWrite = { putBoolean(KEY_USE_IP_OVERRIDE, enabled) }) { active ->
-      val nextCacheKey =
-        "${active.endpointInput.trim()}|$enabled|${active.overrideIp.trim()}|${active.ignoreSsl}"
-      val keepDetected = active.detectedForInput == nextCacheKey
-      active.copy(
-        useIpOverride = enabled,
-        detectedEndpointUrl = if (keepDetected) active.detectedEndpointUrl else "",
-        detectedFamily = if (keepDetected) active.detectedFamily else null,
-        detectedForInput = if (keepDetected) active.detectedForInput else "",
-      )
-    }
-  }
-
-  fun updateOverrideIp(ip: String) {
-    val trimmed = ip.trim()
-    mutateActiveProfileOrPrefs(legacyWrite = { putString(KEY_OVERRIDE_IP, trimmed) }) { active ->
-      val nextCacheKey =
-        "${active.endpointInput.trim()}|${active.useIpOverride}|$trimmed|${active.ignoreSsl}"
-      val keepDetected = active.detectedForInput == nextCacheKey
-      active.copy(
-        overrideIp = trimmed,
-        detectedEndpointUrl = if (keepDetected) active.detectedEndpointUrl else "",
-        detectedFamily = if (keepDetected) active.detectedFamily else null,
-        detectedForInput = if (keepDetected) active.detectedForInput else "",
-      )
-    }
-  }
-
-  fun setIgnoreSsl(enabled: Boolean) {
-    mutateActiveProfileOrPrefs(legacyWrite = { putBoolean(KEY_IGNORE_SSL, enabled) }) { active ->
-      val nextCacheKey =
-        "${active.endpointInput.trim()}|${active.useIpOverride}|${active.overrideIp.trim()}|$enabled"
-      val keepDetected = active.detectedForInput == nextCacheKey
-      active.copy(
-        ignoreSsl = enabled,
-        detectedEndpointUrl = if (keepDetected) active.detectedEndpointUrl else "",
-        detectedFamily = if (keepDetected) active.detectedFamily else null,
-        detectedForInput = if (keepDetected) active.detectedForInput else "",
-      )
-    }
-  }
-
-  fun setUseApiKey(enabled: Boolean) {
-    mutateActiveProfileOrPrefs(legacyWrite = { putBoolean(KEY_USE_API_KEY, enabled) }) { active ->
-      active.copy(apiKeyNotNeeded = !enabled)
-    }
-  }
-
-  fun setUseCustomModel(enabled: Boolean) {
-    mutateActiveProfileOrPrefs(legacyWrite = { putBoolean(KEY_USE_CUSTOM_MODEL, enabled) }) { active ->
-      active.copy(useCustomModel = enabled)
-    }
-  }
-
-  fun setLiveTranscription(enabled: Boolean) {
-    mutateActiveProfileOrPrefs(legacyWrite = { putBoolean(KEY_LIVE_TRANSCRIPTION, enabled) }) { active ->
-      active.copy(liveTranscription = enabled)
-    }
+  fun setTargetAppOnActivePreset(packageName: String, label: String) {
+    val activeApp = _settings.value.activeAppPreset ?: return
+    saveAppPreset(activeApp.copy(targetPackage = packageName, targetLabel = label))
   }
 
   fun setMicButtonCapture(enabled: Boolean) {
     prefs.edit().putBoolean(KEY_MIC_BUTTON_CAPTURE, enabled).apply()
     _settings.value = readFromPrefs()
-  }
-
-  fun setSearchInCurrentApp(enabled: Boolean) {
-    mutateActiveProfileOrPrefs(legacyWrite = { putBoolean(KEY_SEARCH_IN_CURRENT_APP, enabled) }) { active ->
-      active.copy(searchInCurrentApp = enabled)
-    }
   }
 
   fun setAppHandoffStatus(packageName: String, status: AppHandoffStatus) {
@@ -689,85 +667,44 @@ class SettingsRepository private constructor(context: Context) {
     _settings.value = readFromPrefs()
   }
 
-  fun saveDetectedEndpoint(cacheKey: String, fullUrl: String, family: ServerFamily) {
-    mutateActiveProfileOrPrefs(
-      legacyWrite = {
-        putString(KEY_DETECTED_URL, fullUrl)
-        putString(KEY_DETECTED_FAMILY, family.name)
-        putString(KEY_DETECTED_FOR_INPUT, cacheKey)
-      },
-    ) { active ->
-      if (active.cacheKey == cacheKey) {
-        active.copy(
-          detectedEndpointUrl = fullUrl,
-          detectedFamily = family,
-          detectedForInput = cacheKey,
-        )
-      } else {
-        active
-      }
-    }
-  }
-
-  fun clearDetectedEndpoint() {
-    mutateActiveProfileOrPrefs(
-      legacyWrite = {
-        remove(KEY_DETECTED_URL)
-        remove(KEY_DETECTED_FAMILY)
-        remove(KEY_DETECTED_FOR_INPUT)
-      },
-    ) { active ->
-      active.copy(
-        detectedEndpointUrl = "",
-        detectedFamily = null,
-        detectedForInput = "",
-      )
-    }
-  }
-
-  fun setTargetApp(packageName: String, label: String) {
-    mutateActiveProfileOrPrefs(
-      legacyWrite = {
-        putString(KEY_TARGET_PACKAGE, packageName)
-        putString(KEY_TARGET_LABEL, label)
-      },
-    ) { active ->
-      active.copy(targetPackage = packageName, targetLabel = label)
-    }
-  }
-
-  fun setLanguage(language: LanguageOption) {
-    mutateActiveProfileOrPrefs(legacyWrite = { putString(KEY_LANGUAGE, language.name) }) { active ->
-      active.copy(language = language)
-    }
-  }
-
-  fun setApiKey(apiKey: String) {
-    mutateActiveProfileOrPrefs(legacyWrite = { putString(KEY_API_KEY, apiKey.trim()) }) { active ->
-      active.copy(apiKey = apiKey.trim())
-    }
-  }
-
-  fun setModelName(modelName: String) {
-    val value = modelName.trim().ifBlank { AppSettings.DEFAULT_MODEL_NAME }
-    mutateActiveProfileOrPrefs(legacyWrite = { putString(KEY_MODEL_NAME, value) }) { active ->
-      active.copy(modelName = value)
-    }
-  }
-
-  fun setMicSource(micSource: MicSource) {
-    mutateActiveProfileOrPrefs(legacyWrite = { putString(KEY_MIC_SOURCE, micSource.name) }) { active ->
-      active.copy(micSource = micSource)
-    }
-  }
-
   fun setLastAssistArgsLog(summary: String) {
     prefs.edit().putString(KEY_LAST_ASSIST_ARGS, summary).apply()
     _settings.value = readFromPrefs()
   }
 
+  fun loadEndpointHealthRecords(): Map<String, EndpointHealthRecord> {
+    val raw = prefs.getString(KEY_ENDPOINT_HEALTH_JSON, null)
+    if (raw.isNullOrBlank()) return emptyMap()
+    return try {
+      val json = JSONObject(raw)
+      buildMap {
+        for (key in json.keys()) {
+          val obj = json.optJSONObject(key) ?: continue
+          put(key, EndpointHealthRecord.fromJson(obj))
+        }
+      }
+    } catch (_: Exception) {
+      emptyMap()
+    }
+  }
+
+  fun saveEndpointHealthRecords(records: Map<String, EndpointHealthRecord>) {
+    val json = JSONObject()
+    for ((id, rec) in records) {
+      json.put(id, rec.toJson())
+    }
+    prefs.edit().putString(KEY_ENDPOINT_HEALTH_JSON, json.toString()).apply()
+  }
+
   companion object {
     private const val PREFS_NAME = "tv_voice_search_prefs"
+    private const val KEY_ENDPOINTS_JSON = "endpoint_presets_v2_json"
+    private const val KEY_APP_PRESETS_JSON = "app_presets_v2_json"
+    private const val KEY_CONFIGS_JSON = "config_presets_v2_json"
+    private const val KEY_ACTIVE_CONFIG_ID = "active_config_preset_id"
+    private const val KEY_ENDPOINT_HEALTH_JSON = "endpoint_health_records_json"
+
+    // Legacy v1 / v2 keys retained for seamless migration
     private const val KEY_PROFILES_JSON = "endpoint_profiles_json"
     private const val KEY_ACTIVE_PROFILE_ID = "active_endpoint_profile_id"
     private const val KEY_ENDPOINT_INPUT = "endpoint_input"

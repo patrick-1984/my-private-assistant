@@ -23,6 +23,7 @@ import java.net.URLEncoder
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SNIHostName
@@ -61,6 +62,12 @@ sealed class TranscribeResult {
   ) : TranscribeResult()
 
   data class Failure(val message: String, val isAuthError: Boolean = false) : TranscribeResult()
+}
+
+sealed class HealthCheckResult {
+  data class Healthy(val message: String = "Endpoint responsive") : HealthCheckResult()
+
+  data class Unhealthy(val reason: String, val isAuthError: Boolean = false) : HealthCheckResult()
 }
 
 data class HttpResponseData(val statusCode: Int, val body: String)
@@ -505,6 +512,8 @@ object UrlConnectionTransport : HttpTransport {
 
 class EndpointClient(private val transport: HttpTransport = UrlConnectionTransport) {
 
+  private val discoveredModelsCache = ConcurrentHashMap<String, List<String>>()
+
   data class NormalizedInput(
     val primaryBase: String,
     val fallbackHttpsBase: String?,
@@ -682,13 +691,22 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
 
       val silentWav = WavEncoder.silentWav(durationMillis = 500)
       val primaryCandidates = buildCandidates(normalized.primaryBase, normalized.path)
+      val resolvedModelName =
+        resolveModelAlias(
+          candidateUrls = primaryCandidates.map { it.url },
+          rawModelName = modelName,
+          apiKey = apiKey,
+          validatedOverrideIp = validatedIp,
+          ignoreSsl = ignoreSsl,
+          forceRefreshModels = true,
+        )
 
       val primaryOutcome =
         probeCandidateList(
           candidates = primaryCandidates,
           silentWav = silentWav,
           apiKey = apiKey,
-          modelName = modelName,
+          modelName = resolvedModelName,
           language = language,
           validatedOverrideIp = validatedIp,
           ignoreSsl = ignoreSsl,
@@ -747,6 +765,143 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
     return result.copy(availableModels = models)
   }
 
+  /**
+   * Fast, low-overhead reachability check used at recording start and for background recovery of
+   * degraded primary endpoints. Prefers lightweight GET /v1/models (zero audio/inference cost) and
+   * falls back to a tiny 150ms probe only when /models is unsupported (e.g. whisper.cpp /asr).
+   */
+  suspend fun quickHealthCheck(
+    settings: AppSettings,
+    onEndpointDetected: (String, ServerFamily) -> Unit = { _, _ -> },
+  ): HealthCheckResult =
+    withContext(Dispatchers.IO) {
+      if (settings.endpointInput.isBlank()) {
+        return@withContext HealthCheckResult.Unhealthy("No endpoint URL configured.")
+      }
+      if (settings.useApiKey && settings.apiKey.isBlank()) {
+        return@withContext HealthCheckResult.Unhealthy("API key missing.", isAuthError = true)
+      }
+
+      val normalized =
+        normalizeInput(settings.endpointInput)
+          ?: return@withContext HealthCheckResult.Unhealthy("Invalid endpoint host or URL.")
+
+      val validatedIp =
+        if (settings.useIpOverride) {
+          validateNumericIp(settings.overrideIp)
+            ?: return@withContext HealthCheckResult.Unhealthy("Invalid override IP address.")
+        } else {
+          null
+        }
+
+      val apiKey = settings.effectiveApiKey
+      val candidateBases = buildList {
+        if (settings.hasValidCachedEndpoint) {
+          add(settings.detectedEndpointUrl)
+        } else {
+          add("${normalized.primaryBase}${normalized.path}")
+          normalized.fallbackHttpsBase?.let { add("$it${normalized.path}") }
+        }
+      }
+
+      var sawUnsupportedModels = false
+      var lastIoError: String? = null
+      var lastHttpError: String? = null
+
+      for (baseUrl in candidateBases) {
+        val modelUrls = buildOpenAiModelUrls(baseUrl)
+        for (url in modelUrls) {
+          try {
+            val target = resolveTarget(url, validatedIp)
+            val headers = buildMap {
+              target.hostHeader?.let { put("Host", it) }
+              if (apiKey.isNotBlank()) {
+                put("Authorization", "Bearer $apiKey")
+              }
+            }
+            val response =
+              transport.getJson(
+                urlString = target.connectUrl,
+                headers = headers,
+                connectTimeoutMs = HEALTH_TIMEOUT_MS,
+                readTimeoutMs = HEALTH_TIMEOUT_MS,
+                tlsServerName = target.tlsServerName,
+                ignoreSsl = settings.ignoreSsl,
+              )
+            when (response.statusCode) {
+              200 -> return@withContext HealthCheckResult.Healthy("Endpoint reachable")
+              401, 403 ->
+                return@withContext HealthCheckResult.Unhealthy(
+                  "HTTP ${response.statusCode} authorization failed",
+                  isAuthError = true,
+                )
+              404, 405 -> sawUnsupportedModels = true
+              in 500..599 -> lastHttpError = "HTTP ${response.statusCode}"
+              else -> lastHttpError = "HTTP ${response.statusCode}"
+            }
+          } catch (e: IOException) {
+            lastIoError = e.message ?: e.javaClass.simpleName
+          }
+        }
+      }
+
+      if (sawUnsupportedModels) {
+        val cachedFamily = settings.detectedFamily
+        if (settings.hasValidCachedEndpoint && cachedFamily != null) {
+          return@withContext try {
+            val tinyWav = WavEncoder.silentWav(durationMillis = 150)
+            val resp =
+              sendAudioRequest(
+                url = settings.detectedEndpointUrl,
+                family = cachedFamily,
+                wavBytes = tinyWav,
+                apiKey = apiKey,
+                modelName = settings.effectiveModelName,
+                language = settings.language,
+                validatedOverrideIp = validatedIp,
+                ignoreSsl = settings.ignoreSsl,
+                connectTimeoutMs = HEALTH_TIMEOUT_MS,
+                readTimeoutMs = HEALTH_TIMEOUT_MS,
+              )
+            when {
+              resp.statusCode == 200 -> HealthCheckResult.Healthy("Endpoint reachable")
+              resp.statusCode == 401 || resp.statusCode == 403 ->
+                HealthCheckResult.Unhealthy("HTTP ${resp.statusCode}", isAuthError = true)
+              (resp.statusCode == 400 || resp.statusCode == 422) &&
+                bodyMentionsAudioOrFileError(resp.body) ->
+                HealthCheckResult.Healthy("Endpoint reachable")
+              else -> HealthCheckResult.Unhealthy("HTTP ${resp.statusCode}")
+            }
+          } catch (e: IOException) {
+            HealthCheckResult.Unhealthy("Connection error (${e.message ?: e.javaClass.simpleName})")
+          }
+        } else {
+          return@withContext when (
+            val probe =
+              detectEndpoint(
+                rawInput = settings.endpointInput,
+                apiKey = apiKey,
+                modelName = settings.effectiveModelName,
+                language = settings.language,
+                useIpOverride = settings.useIpOverride,
+                overrideIp = settings.overrideIp,
+                ignoreSsl = settings.ignoreSsl,
+              )
+          ) {
+            is ProbeResult.Success -> {
+              onEndpointDetected(probe.url, probe.family)
+              HealthCheckResult.Healthy(probe.message)
+            }
+            is ProbeResult.NeedsApiKey ->
+              HealthCheckResult.Unhealthy(probe.message, isAuthError = true)
+            is ProbeResult.Failure -> HealthCheckResult.Unhealthy(probe.message)
+          }
+        }
+      }
+
+      HealthCheckResult.Unhealthy(lastHttpError ?: lastIoError?.let { "Connection error ($it)" } ?: "Endpoint unreachable")
+    }
+
   suspend fun fetchModels(
     detectedUrl: String,
     rawInput: String,
@@ -764,6 +919,45 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
       if (baseUrl.isBlank()) return@withContext emptyList()
       fetchModelsForEndpoint(baseUrl, apiKey, validatedIp, ignoreSsl)
     }
+
+  private fun modelCacheKey(endpointUrl: String, apiKey: String): String {
+    val origin =
+      try {
+        val uri = URI(endpointUrl)
+        val portPart = if (uri.port != -1) ":${uri.port}" else ""
+        "${uri.scheme}://${uri.host}$portPart"
+      } catch (_: Exception) {
+        endpointUrl
+      }
+    return "$origin|${apiKey.trim().hashCode()}"
+  }
+
+  private fun resolveModelAlias(
+    candidateUrls: List<String>,
+    rawModelName: String,
+    apiKey: String,
+    validatedOverrideIp: String?,
+    ignoreSsl: Boolean,
+    forceRefreshModels: Boolean = false,
+  ): String {
+    val trimmed = rawModelName.trim()
+    if (!trimmed.equals("parakeet", ignoreCase = true)) return rawModelName
+
+    val targetUrl = candidateUrls.firstOrNull { isNvidiaNimUrl(it) } ?: candidateUrls.firstOrNull()
+    if (targetUrl.isNullOrBlank()) return rawModelName
+
+    val key = modelCacheKey(targetUrl, apiKey)
+    val cached = if (forceRefreshModels) null else discoveredModelsCache[key]
+    val models =
+      cached
+        ?: fetchModelsForEndpoint(
+          endpointUrl = targetUrl,
+          apiKey = apiKey,
+          validatedOverrideIp = validatedOverrideIp,
+          ignoreSsl = ignoreSsl,
+        )
+    return pickBestParakeetModel(models) ?: rawModelName
+  }
 
   internal fun fetchModelsForEndpoint(
     endpointUrl: String,
@@ -792,7 +986,11 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
           )
         if (response.statusCode == 200) {
           val parsed = parseOpenAiModelsJson(response.body)
-          if (parsed.isNotEmpty()) return filterRelevantModels(endpointUrl, parsed)
+          if (parsed.isNotEmpty()) {
+            val filtered = filterRelevantModels(endpointUrl, parsed)
+            discoveredModelsCache[modelCacheKey(endpointUrl, apiKey)] = filtered
+            return filtered
+          }
         }
       } catch (_: Exception) {
         // Ignore model discovery failure; endpoint transcription still works
@@ -802,7 +1000,8 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
   }
 
   internal fun filterRelevantModels(endpointUrl: String, models: List<String>): List<String> {
-    if (models.size <= 12 && !endpointUrl.contains("nvidia.com", ignoreCase = true)) {
+    val isNvidia = isNvidiaNimUrl(endpointUrl)
+    if (models.size <= 12 && !isNvidia) {
       return models
     }
     val audioKeywords =
@@ -810,9 +1009,62 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
     val audioModels =
       models.filter { id -> audioKeywords.any { kw -> id.contains(kw, ignoreCase = true) } }
     if (audioModels.isNotEmpty()) {
-      return audioModels.take(15)
+      val parakeets =
+        audioModels
+          .filter { it.contains("parakeet", ignoreCase = true) }
+          .sortedWith(::compareParakeetVersionsDescending)
+      val others = audioModels.filterNot { it.contains("parakeet", ignoreCase = true) }
+      return (parakeets + others).take(15)
     }
     return models.take(12)
+  }
+
+  internal fun pickBestParakeetModel(models: List<String>): String? {
+    return models
+      .filter { it.contains("parakeet", ignoreCase = true) }
+      .sortedWith(::compareParakeetVersionsDescending)
+      .firstOrNull()
+  }
+
+  private fun compareParakeetVersionsDescending(a: String, b: String): Int {
+    val vA = extractVersionTagNumbers(a)
+    val vB = extractVersionTagNumbers(b)
+    val vCmp = compareNumericListsDescending(vA, vB)
+    if (vCmp != 0) return vCmp
+
+    val allA = extractAllNumbers(a)
+    val allB = extractAllNumbers(b)
+    val nCmp = compareNumericListsDescending(allA, allB)
+    if (nCmp != 0) return nCmp
+
+    val tdtA = if (a.contains("tdt", ignoreCase = true)) 1 else 0
+    val tdtB = if (b.contains("tdt", ignoreCase = true)) 1 else 0
+    if (tdtA != tdtB) return tdtB.compareTo(tdtA)
+
+    return b.compareTo(a, ignoreCase = true)
+  }
+
+  private fun extractVersionTagNumbers(modelId: String): List<Double> {
+    val match = Regex("(?:^|[-_/])v(\\d+(?:\\.\\d+)*)", RegexOption.IGNORE_CASE).find(modelId)
+      ?: return emptyList()
+    return match.groupValues[1].split('.').mapNotNull { it.toDoubleOrNull() }
+  }
+
+  private fun extractAllNumbers(modelId: String): List<Double> {
+    return Regex("\\d+(?:\\.\\d+)?")
+      .findAll(modelId)
+      .mapNotNull { it.value.toDoubleOrNull() }
+      .toList()
+  }
+
+  private fun compareNumericListsDescending(a: List<Double>, b: List<Double>): Int {
+    val maxLen = maxOf(a.size, b.size)
+    for (i in 0 until maxLen) {
+      val va = a.getOrElse(i) { 0.0 }
+      val vb = b.getOrElse(i) { 0.0 }
+      if (va != vb) return vb.compareTo(va)
+    }
+    return 0
   }
 
   internal fun buildOpenAiModelUrls(endpointUrl: String): List<String> {
@@ -1038,13 +1290,22 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
         }
       }
 
+      val resolvedModelName =
+        resolveModelAlias(
+          candidateUrls = listOf(targetUrl),
+          rawModelName = settings.effectiveModelName,
+          apiKey = settings.effectiveApiKey,
+          validatedOverrideIp = validatedIp,
+          ignoreSsl = settings.ignoreSsl,
+        )
+
       val firstTry =
         executeTranscription(
           url = targetUrl,
           family = targetFamily,
           wavBytes = wavBytes,
           apiKey = settings.effectiveApiKey,
-          modelName = settings.effectiveModelName,
+          modelName = resolvedModelName,
           language = settings.language,
           validatedOverrideIp = validatedIp,
           ignoreSsl = settings.ignoreSsl,
@@ -1454,6 +1715,7 @@ class EndpointClient(private val transport: HttpTransport = UrlConnectionTranspo
   }
 
   companion object {
+    private const val HEALTH_TIMEOUT_MS = 2500
     private const val PROBE_TIMEOUT_MS = 5000
     private const val TRANSCRIBE_CONNECT_TIMEOUT_MS = 5000
     private const val TRANSCRIBE_READ_TIMEOUT_MS = 25000

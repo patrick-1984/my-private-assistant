@@ -13,8 +13,10 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import com.example.audio.RecordingOutcome
 import com.example.audio.VoiceRecorder
+import com.example.data.EndpointSlot
 import com.example.data.SettingsRepository
 import com.example.network.EndpointClient
+import com.example.network.EndpointHealthManager
 import com.example.network.TranscribeResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +29,7 @@ class RecognizerService : RecognitionService() {
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
   private val settingsRepo by lazy { SettingsRepository.get(this) }
+  private val healthManager by lazy { EndpointHealthManager.get(this) }
   private val endpointClient by lazy { EndpointClient() }
 
   private var activeRecorder: VoiceRecorder? = null
@@ -44,7 +47,7 @@ class RecognizerService : RecognitionService() {
     }
 
     val settings = settingsRepo.settings.value
-    if (settings.endpointInput.isBlank()) {
+    if (settings.orderedActiveEndpoints().isEmpty()) {
       runCatching { listener.error(SpeechRecognizer.ERROR_CLIENT) }
       return
     }
@@ -54,6 +57,10 @@ class RecognizerService : RecognitionService() {
     activeRecorder = recorder
 
     val extraPfd = extractAudioSourcePfd(recognizerIntent)
+    val preCheckJob =
+      settings.activeConfiguration?.let { cfg ->
+        healthManager.onRecordingStarted(cfg, settings.endpointPresets, settings.activeAppPreset)
+      }
 
     activeJob =
       scope.launch {
@@ -75,18 +82,50 @@ class RecognizerService : RecognitionService() {
             runCatching { listener.error(SpeechRecognizer.ERROR_AUDIO) }
           }
           is RecordingOutcome.Success -> {
+            if (preCheckJob != null && preCheckJob.isActive) {
+              preCheckJob.join()
+            }
             val currentSettings = settingsRepo.settings.value
-            val result =
-              endpointClient.transcribe(
-                wavBytes = recOutcome.wavBytes,
-                settings = currentSettings,
-                onEndpointDetected = { url, family ->
-                  settingsRepo.saveDetectedEndpoint(currentSettings.cacheKey, url, family)
-                },
-                onEndpointInvalidated = { settingsRepo.clearDetectedEndpoint() },
-              )
+            val activeCfg = currentSettings.activeConfiguration
+            val plan = healthManager.orderedFailoverPlan(activeCfg, currentSettings.endpointPresets)
+            if (plan.isEmpty()) {
+              runCatching { listener.error(SpeechRecognizer.ERROR_CLIENT) }
+              return@launch
+            }
 
-            when (result) {
+            var finalResult: TranscribeResult? = null
+            for ((slot, ep) in plan) {
+              val res =
+                endpointClient.transcribe(
+                  wavBytes = recOutcome.wavBytes,
+                  settings = ep.toProbeSettings(currentSettings.activeAppPreset),
+                  onEndpointDetected = { url, family ->
+                    settingsRepo.saveDetectedEndpointForPreset(ep.id, ep.cacheKey, url, family)
+                  },
+                  onEndpointInvalidated = {
+                    settingsRepo.clearDetectedEndpointForPreset(ep.id)
+                  },
+                )
+              when (res) {
+                is TranscribeResult.Success -> {
+                  healthManager.recordSuccess(ep)
+                  healthManager.schedulePrimaryRecoveryIfUsingBackup(
+                    config = activeCfg,
+                    endpoints = currentSettings.endpointPresets,
+                    appPreset = currentSettings.activeAppPreset,
+                    usedSlot = slot,
+                  )
+                  finalResult = res
+                  break
+                }
+                is TranscribeResult.Failure -> {
+                  healthManager.recordFailure(ep, res.message)
+                  finalResult = res
+                }
+              }
+            }
+
+            when (val result = finalResult) {
               is TranscribeResult.Success -> {
                 val text = result.text.trim()
                 if (text.isEmpty()) {
@@ -107,6 +146,7 @@ class RecognizerService : RecognitionService() {
                   else SpeechRecognizer.ERROR_NETWORK
                 runCatching { listener.error(code) }
               }
+              null -> runCatching { listener.error(SpeechRecognizer.ERROR_CLIENT) }
             }
           }
         }

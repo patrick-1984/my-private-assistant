@@ -96,7 +96,11 @@ with JSON (`{"text": "..."}`) and, for the first test, accept the model name `wh
 successful test you can pick or type another model under **Pick custom model / endpoint**.
 
 **NVIDIA build.nvidia.com** gives a free trial API key. The default NVIDIA endpoint is
-`https://integrate.api.nvidia.com/v1`, pre-configured as an inactive **NVIDIA** entry in **Settings > 1. Configuration Sets** — edit it to paste your `nvapi-…` key (and adjust model or language if needed) to activate it. Some NVIDIA speech models on `build.nvidia.com` instead expose per-model `*.invocation.api.nvcf.nvidia.com` HTTP URLs or are gRPC-only (requiring a proxy such as LiteLLM).
+`https://integrate.api.nvidia.com/v1` with default model `parakeet` (automatically selecting the
+highest-numbered Parakeet version returned by `/v1/models`), pre-configured as an inactive **NVIDIA**
+entry in **Settings > 1. Configuration Sets** — edit it to paste your `nvapi-…` key to activate it.
+Some NVIDIA speech models on `build.nvidia.com` instead expose per-model
+`*.invocation.api.nvcf.nvidia.com` HTTP URLs or are gRPC-only (requiring a proxy such as LiteLLM).
 
 Details, examples and the NVIDIA steps: [`docs/ENDPOINTS.md`](docs/ENDPOINTS.md).
 
