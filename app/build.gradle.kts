@@ -13,7 +13,7 @@ android {
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
-    applicationId = "io.github.patrick1984.myprivateassistant"
+    applicationId = "cc.nasz.myprivateassistant"
     minSdk = 29
     targetSdk = 34
     versionCode = 2

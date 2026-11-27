@@ -45,12 +45,12 @@ Agent guide: [`docs/AGENT-INSTALL.md`](docs/AGENT-INSTALL.md) - short human guid
 - Any language your transcription endpoint supports.
 - Pure Kotlin, no native code, about 3 MB.
 
-App name on the TV: **TV Voice Search** - package id: `io.github.patrick1984.myprivateassistant`
-(named after this repository).
+App name on the TV: **TV Voice Search** - package id: `cc.nasz.myprivateassistant`
+(the `cc.nasz.` prefix plus the repository name).
 
 **How it was built:** the app is developed with **Google AI Studio** ("Build an Android app"). AI Studio
 generated the first package id, `com.aistudio.tvvoicesearch.qkmzpx`; it was replaced by
-`io.github.patrick1984.myprivateassistant` before the first public release. The code namespace is still
+`cc.nasz.myprivateassistant` before the first public release. The code namespace is still
 `com.example`. The id is set in `app/build.gradle.kts` and is the same for every build (AI Studio, the
 GitHub workflow, Android Studio). An app installed under the old id is a separate app: uninstall it and
 repeat the ADB setup.
@@ -218,8 +218,8 @@ Planned, not built yet:
 
 - The app is developed in **Google AI Studio** ("Build an Android app"). Do not change the
   `signingConfigs` block in `app/build.gradle.kts`: AI Studio needs it.
-- The package id is `io.github.patrick1984.myprivateassistant` (`applicationId` in
-  `app/build.gradle.kts`), named after this repository; it replaced the id AI Studio generated
+- The package id is `cc.nasz.myprivateassistant` (`applicationId` in
+  `app/build.gradle.kts`), the `cc.nasz.` prefix plus the repository name; it replaced the id AI Studio generated
   (`com.aistudio.tvvoicesearch.qkmzpx`). The code namespace is `com.example`. If AI Studio rewrites
   `applicationId` on a later push, set it back to this id.
 - Signing keys differ by source: AI Studio signs with its own key, the GitHub workflow with the keystore

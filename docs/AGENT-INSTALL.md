@@ -13,10 +13,10 @@ Constants used below:
 
 | Name | Value |
 |---|---|
-| Package | `io.github.patrick1984.myprivateassistant` |
-| Assistant service | `io.github.patrick1984.myprivateassistant/com.example.AssistService` |
-| Recognizer service | `io.github.patrick1984.myprivateassistant/com.example.RecognizerService` |
-| Accessibility service (version 1.1+) | `io.github.patrick1984.myprivateassistant/com.example.MicKeyService` |
+| Package | `cc.nasz.myprivateassistant` |
+| Assistant service | `cc.nasz.myprivateassistant/com.example.AssistService` |
+| Recognizer service | `cc.nasz.myprivateassistant/com.example.RecognizerService` |
+| Accessibility service (version 1.1+) | `cc.nasz.myprivateassistant/com.example.MicKeyService` |
 | Releases | https://github.com/patrick-1984/my-private-assistant/releases |
 
 ## Ground rules
@@ -175,7 +175,7 @@ adb shell getprop ro.product.cpu.abilist
    `-r` keeps the app's data when updating. If the install fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`,
    a copy signed with a different key is installed. This happens when switching between a Google AI
    Studio build and a GitHub release (they are signed with different keys; the package id is the same).
-   Ask the user before running `adb uninstall io.github.patrick1984.myprivateassistant` (this deletes the app's
+   Ask the user before running `adb uninstall cc.nasz.myprivateassistant` (this deletes the app's
    settings and drops its assistant, recognizer and accessibility roles), then install again and repeat
    steps 4 to 6.
 
@@ -184,13 +184,13 @@ adb shell getprop ro.product.cpu.abilist
 1. Open the app once:
 
    ```sh
-   adb shell monkey -p io.github.patrick1984.myprivateassistant -c android.intent.category.LEANBACK_LAUNCHER 1
+   adb shell monkey -p cc.nasz.myprivateassistant -c android.intent.category.LEANBACK_LAUNCHER 1
    ```
 
 2. Grant the microphone permission (ask first). The user can also press **Grant Mic** in the app.
 
    ```sh
-   adb shell pm grant io.github.patrick1984.myprivateassistant android.permission.RECORD_AUDIO
+   adb shell pm grant cc.nasz.myprivateassistant android.permission.RECORD_AUDIO
    ```
 
 3. The user opens the app's **Settings** (gear icon) on the TV, enters the transcription endpoint under
@@ -253,9 +253,9 @@ adb shell getprop ro.product.cpu.abilist
 2. Set the new values (ask first):
 
    ```sh
-   adb shell settings put secure voice_interaction_service io.github.patrick1984.myprivateassistant/com.example.AssistService
-   adb shell settings put secure assistant io.github.patrick1984.myprivateassistant/com.example.AssistService
-   adb shell settings put secure voice_recognition_service io.github.patrick1984.myprivateassistant/com.example.RecognizerService
+   adb shell settings put secure voice_interaction_service cc.nasz.myprivateassistant/com.example.AssistService
+   adb shell settings put secure assistant cc.nasz.myprivateassistant/com.example.AssistService
+   adb shell settings put secure voice_recognition_service cc.nasz.myprivateassistant/com.example.RecognizerService
    ```
 
 3. Verify:
@@ -264,7 +264,7 @@ adb shell getprop ro.product.cpu.abilist
    adb shell "dumpsys voiceinteraction | grep -E 'name=|packageName='"
    ```
 
-   The output must mention `io.github.patrick1984.myprivateassistant`. The app's **Settings >
+   The output must mention `cc.nasz.myprivateassistant`. The app's **Settings >
    5. Assistant & Service Status** (press **Refresh Status**) shows the same.
 
    Note: the **ADB Setup Commands** box in that section also contains an
@@ -293,7 +293,7 @@ service still notes the app in front until it is removed from `enabled_accessibi
 1. Check that the installed APK declares it (read-only). Version 1.1 and newer include it:
 
    ```sh
-   adb shell "dumpsys package io.github.patrick1984.myprivateassistant | grep MicKeyService"
+   adb shell "dumpsys package cc.nasz.myprivateassistant | grep MicKeyService"
    ```
 
    or
@@ -302,7 +302,7 @@ service still notes the app in front until it is removed from `enabled_accessibi
    adb shell cmd package query-services -a android.accessibilityservice.AccessibilityService
    ```
 
-   (look for `io.github.patrick1984.myprivateassistant/com.example.MicKeyService`).
+   (look for `cc.nasz.myprivateassistant/com.example.MicKeyService`).
    **If it is not found** (an APK older than 1.1), skip this step and tell the user: "This version does
    not include the mic-key service. The mic button works from the home screen only. Install the latest
    release to use it inside other apps."
@@ -314,15 +314,15 @@ service still notes the app in front until it is removed from `enabled_accessibi
    adb shell settings get secure accessibility_enabled
    ```
 
-3. Build the new list: the old value plus `:io.github.patrick1984.myprivateassistant/com.example.MicKeyService`
+3. Build the new list: the old value plus `:cc.nasz.myprivateassistant/com.example.MicKeyService`
    (colon-separated). **Do not drop existing entries.** If the old value is `null` or empty, the new value
-   is just `io.github.patrick1984.myprivateassistant/com.example.MicKeyService`. If it already contains it, do
+   is just `cc.nasz.myprivateassistant/com.example.MicKeyService`. If it already contains it, do
    nothing.
 
 4. Apply (ask first). Quote the value so the shell does not split it:
 
    ```sh
-   adb shell settings put secure enabled_accessibility_services "<old-value>:io.github.patrick1984.myprivateassistant/com.example.MicKeyService"
+   adb shell settings put secure enabled_accessibility_services "<old-value>:cc.nasz.myprivateassistant/com.example.MicKeyService"
    adb shell settings put secure accessibility_enabled 1
    ```
 
@@ -379,7 +379,7 @@ Always prefer the values recorded in steps 5 and 6. Ask before each change.
 3. Remove the app (optional, deletes its settings):
 
    ```sh
-   adb uninstall io.github.patrick1984.myprivateassistant
+   adb uninstall cc.nasz.myprivateassistant
    ```
 
 4. Optionally the user turns off USB / network debugging in Developer options.
