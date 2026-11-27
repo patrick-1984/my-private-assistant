@@ -17,10 +17,12 @@ No root is needed.
 3. **Connect:** find the TV's IP (Settings > Network & Internet > your network), then
    `adb connect <tv-ip>:5555` (or use Wireless debugging pairing, or a USB cable). Accept
    "Allow debugging" on the TV. `adb devices` must show `device`.
-4. **Install the app:** download `tv-voice-search-<version>.apk` (for example
-   `tv-voice-search-1.0.0.apk`, one APK for all TVs) and `SHA256SUMS` from the
+4. **Install the app:** check the CPU type with
+   `adb shell getprop ro.product.cpu.abilist`, then download the matching APK
+   (`tv-voice-search-<version>-arm64-v8a.apk` for modern 64-bit devices,
+   `...-armeabi-v7a.apk` for older 32-bit TVs, or `...-universal.apk` if unsure) and `SHA256SUMS` from the
    [latest release](https://github.com/patrick-1984/my-private-assistant/releases/latest), check the hash,
-   then `adb install -r tv-voice-search-<version>.apk`. If an AI Studio build is already installed, see
+   then `adb install -r <that file>`. If an AI Studio build is already installed, see
    `INSTALL_FAILED_UPDATE_INCOMPATIBLE` below.
 5. **Set it up:** open **TV Voice Search** on the TV, allow the microphone, open Settings (gear icon),
    enter your endpoint under **1. Transcription Endpoint** (turn on **Provide API key** if it needs one)

@@ -137,9 +137,12 @@ adb shell getprop ro.product.cpu.abilist
 
 1. Find the latest release: https://github.com/patrick-1984/my-private-assistant/releases/latest
    (or `gh release view -R patrick-1984/my-private-assistant` if the GitHub CLI is installed).
-   Download the `*.apk` asset (named `tv-voice-search-<version>.apk`, for example
-   `tv-voice-search-1.0.0.apk`) and `SHA256SUMS`. There is **one universal APK** (no native code): it
-   runs on 32-bit (`armeabi-v7a`) and 64-bit (`arm64-v8a`) devices. The release number can differ from
+   Each release has three APKs, all signed with the same key, plus `SHA256SUMS`. Pick one with the
+   CPU list from Step 2 (`ro.product.cpu.abilist`):
+   - lists `arm64-v8a` -> `tv-voice-search-<version>-arm64-v8a.apk` (modern TVs and phones);
+   - otherwise lists `armeabi-v7a` -> `tv-voice-search-<version>-armeabi-v7a.apk` (older 32-bit TVs);
+   - unsure or anything else -> `tv-voice-search-<version>-universal.apk`.
+   The release number can differ from
    the version the app reports (release v1.0.0 contains app version 1.1, versionCode 2, set by AI
    Studio). Release builds are signed with the repository's own key, not AI Studio's: if an AI Studio
    build is installed, see the `INSTALL_FAILED_UPDATE_INCOMPATIBLE` note below.
@@ -147,7 +150,7 @@ adb shell getprop ro.product.cpu.abilist
 
    ```sh
    # with the GitHub CLI (any OS)
-   gh release download -R patrick-1984/my-private-assistant --pattern "*.apk" --pattern SHA256SUMS
+   gh release download -R patrick-1984/my-private-assistant --pattern "*-<abi>.apk" --pattern SHA256SUMS
    ```
 
    Without `gh`, download both files in a browser or with `curl -LO <asset-url>`
@@ -157,16 +160,16 @@ adb shell getprop ro.product.cpu.abilist
 
    | OS | Command |
    |---|---|
-   | Windows (PowerShell) | `Get-FileHash .\tv-voice-search-<version>.apk -Algorithm SHA256` (compare with `Get-Content SHA256SUMS`, ignoring case) |
-   | Linux | `sha256sum -c SHA256SUMS` |
-   | macOS | `shasum -a 256 -c SHA256SUMS` |
+   | Windows (PowerShell) | `Get-FileHash .\tv-voice-search-<version>-<abi>.apk -Algorithm SHA256` (compare with `Get-Content SHA256SUMS`, ignoring case) |
+   | Linux | `sha256sum -c --ignore-missing SHA256SUMS` |
+   | macOS | `shasum -a 256 -c --ignore-missing SHA256SUMS` |
 
    If the hash does not match, stop, delete the file and tell the user.
 
 3. Install (ask first):
 
    ```sh
-   adb install -r tv-voice-search-<version>.apk
+   adb install -r tv-voice-search-<version>-<abi>.apk
    ```
 
    `-r` keeps the app's data when updating. If the install fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`,

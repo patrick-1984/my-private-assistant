@@ -188,8 +188,16 @@ same APK runs on `armeabi-v7a`, `arm64-v8a` and `x86` devices.
 - Detailed guide, written for AI agents (also readable by humans): [`docs/AGENT-INSTALL.md`](docs/AGENT-INSTALL.md)
 
 Download from the [latest release](https://github.com/patrick-1984/my-private-assistant/releases/latest):
-`tv-voice-search-<version>.apk` (for example `tv-voice-search-1.0.0.apk`) and `SHA256SUMS`. It is one
-universal APK for 32-bit (`armeabi-v7a`) and 64-bit (`arm64-v8a`) devices. The app inside release v1.0.0
+one APK and `SHA256SUMS`. Each release has three APKs, all signed with the same key:
+
+| File | For |
+|---|---|
+| `tv-voice-search-<version>-armeabi-v7a.apk` | older or cheaper TVs and projectors with a 32-bit ARM CPU |
+| `tv-voice-search-<version>-arm64-v8a.apk` | modern TVs, set-top boxes and phones (64-bit ARM) |
+| `tv-voice-search-<version>-universal.apk` | any device, if unsure (slightly larger) |
+
+Find your device's CPU type with `adb shell getprop ro.product.cpu.abilist`: if it lists `arm64-v8a`,
+take that file, otherwise `armeabi-v7a`. The app inside release v1.0.0
 reports version 1.1 (versionCode 2, set by AI Studio). Release builds are signed with this repository's
 key, not AI Studio's: to switch from an AI Studio install, uninstall it first (see **Updating** above).
 
@@ -217,8 +225,9 @@ Planned, not built yet:
 - **CI build:** [`.github/workflows/build-apk.yml`](.github/workflows/build-apk.yml) builds a signed
   release APK. It runs **only when started by hand** (Actions -> "Build APK" -> Run workflow), with the
   inputs `version` (for example `1.0.1`) and `publish` (create a GitHub release `v<version>`).
-  It runs the unit tests, builds `:app:assembleRelease`, and uploads `tv-voice-search-<version>.apk`
-  and `SHA256SUMS`.
+  It runs the unit tests, builds `:app:assembleRelease`, and then makes the three APKs
+  (`armeabi-v7a`, `arm64-v8a`, `universal`): the per-CPU files are the universal build with the other
+  CPU folders removed, zip-aligned and re-signed with the same key. It uploads them with `SHA256SUMS`.
 - The workflow needs these repository secrets:
   - `ANDROID_KEYSTORE_BASE64`: the upload keystore (`.jks`), base64-encoded. The key alias must be `upload`.
   - `ANDROID_STORE_PASSWORD`: the keystore password.
