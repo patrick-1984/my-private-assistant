@@ -40,13 +40,13 @@ No root is needed.
    Then:
 
    ```sh
-   adb shell settings put secure voice_interaction_service com.aistudio.tvvoicesearch.qkmzpx/com.example.AssistService
-   adb shell settings put secure assistant com.aistudio.tvvoicesearch.qkmzpx/com.example.AssistService
-   adb shell settings put secure voice_recognition_service com.aistudio.tvvoicesearch.qkmzpx/com.example.RecognizerService
+   adb shell settings put secure voice_interaction_service io.github.patrick1984.myprivateassistant/com.example.AssistService
+   adb shell settings put secure assistant io.github.patrick1984.myprivateassistant/com.example.AssistService
+   adb shell settings put secure voice_recognition_service io.github.patrick1984.myprivateassistant/com.example.RecognizerService
    ```
 
 7. **Mic button inside other apps and current-app search** (app version 1.1 and newer): add
-   `com.aistudio.tvvoicesearch.qkmzpx/com.example.MicKeyService` to `enabled_accessibility_services`,
+   `io.github.patrick1984.myprivateassistant/com.example.MicKeyService` to `enabled_accessibility_services`,
    keeping the existing entries. See step 6 of [`AGENT-INSTALL.md`](AGENT-INSTALL.md). This service only
    watches the mic / search keys and the name of the app in front; it reads no screen content. Do not
    paste the accessibility line from the app's "ADB Setup Commands" box: it replaces the whole list.
@@ -55,9 +55,9 @@ No root is needed.
 
 **`INSTALL_FAILED_UPDATE_INCOMPATIBLE`:** the installed copy was signed with a different key (for
 example an AI Studio build, and now a GitHub release). Uninstall it
-(`adb uninstall com.aistudio.tvvoicesearch.qkmzpx`, this deletes its settings), install again, and repeat
+(`adb uninstall io.github.patrick1984.myprivateassistant`, this deletes its settings), install again, and repeat
 steps 5 to 7.
 
 **Undo:** put back the values you wrote down in step 6 (`adb shell settings put secure ...`), remove the
-accessibility entry, and `adb uninstall com.aistudio.tvvoicesearch.qkmzpx`. Details: step 8 of
+accessibility entry, and `adb uninstall io.github.patrick1984.myprivateassistant`. Details: step 8 of
 [`AGENT-INSTALL.md`](AGENT-INSTALL.md).

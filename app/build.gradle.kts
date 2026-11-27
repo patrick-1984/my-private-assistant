@@ -13,7 +13,7 @@ android {
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
-    applicationId = "com.aistudio.tvvoicesearch.qkmzpx"
+    applicationId = "io.github.patrick1984.myprivateassistant"
     minSdk = 29
     targetSdk = 34
     versionCode = 2
